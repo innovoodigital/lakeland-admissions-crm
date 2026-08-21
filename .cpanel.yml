@@ -17,3 +17,4 @@ deployment:
     - /bin/cp login.php $DEPLOYPATH
     - /bin/cp logout.php $DEPLOYPATH
     - /bin/cp reminder_action.php $DEPLOYPATH
+    - /bin/cp report.php $DEPLOYPATH
