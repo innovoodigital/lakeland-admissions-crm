@@ -161,17 +161,50 @@ function dashboard_add_action(
     string $tone = 'info',
     string $note = ''
 ): void {
+    $leadId = (int)($row['id'] ?? 0);
+    $date = trim($date);
+    $timeLabel = dashboard_action_time($time);
+    $actionGroup = $tone === 'visit'
+        ? 'visit'
+        : strtolower(
+            preg_replace('/[^a-z0-9]+/i', '_', $type . '_' . $title)
+        );
+
+    if (in_array($tone, ['visit', 'danger'], true)) {
+        foreach ($actions as $index => $existingAction) {
+            if (
+                (int)($existingAction['lead_id'] ?? 0) === $leadId
+                && (string)($existingAction['date'] ?? '') === $date
+                && (string)($existingAction['tone'] ?? '') === $tone
+                && (string)($existingAction['group'] ?? '') === $actionGroup
+            ) {
+                $existingHasTime = ($existingAction['time'] ?? 'Any time') !== 'Any time';
+                $newHasTime = $timeLabel !== 'Any time';
+
+                if ($newHasTime && !$existingHasTime) {
+                    $actions[$index]['time'] = $timeLabel;
+                    $actions[$index]['type'] = $type;
+                    $actions[$index]['title'] = $title;
+                    $actions[$index]['note'] = $note;
+                }
+
+                return;
+            }
+        }
+    }
+
     $actions[] = [
-        'lead_id' => (int)($row['id'] ?? 0),
+        'lead_id' => $leadId,
         'name' => dashboard_lead_name($row),
         'parent' => dashboard_parent_name($row),
         'contact' => trim((string)($row['contact'] ?? '')),
         'phone_href' => dashboard_phone_href($row),
         'status' => dashboard_status_label($row),
+        'group' => $actionGroup,
         'type' => $type,
         'title' => $title,
         'date' => $date,
-        'time' => dashboard_action_time($time),
+        'time' => $timeLabel,
         'tone' => $tone,
         'note' => $note,
     ];

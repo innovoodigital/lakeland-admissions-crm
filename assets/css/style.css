@@ -10108,6 +10108,8 @@ html[data-theme="dark"] .dashboard-kpi .num span {
 .dashboard-panel {
   display: grid;
   gap: 12px;
+  align-content: start;
+  min-height: 0 !important;
   padding: 18px !important;
 }
 
