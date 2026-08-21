@@ -53,6 +53,7 @@ $active = $active ?? '';
       <?php if (is_admin()): ?>
       <a href="<?= BASE_PATH ?>/lead_form.php" class="<?= $active==='add'?'active':'' ?>">Add Lead</a>
       <a href="<?= BASE_PATH ?>/import_csv.php" class="<?= $active==='import'?'active':'' ?>">Import CSV</a>
+      <a href="<?= BASE_PATH ?>/report.php" class="<?= $active==='reports'?'active':'' ?>">Reports</a>
       <?php endif; ?>
     </nav>
     <?php if ($user): ?>

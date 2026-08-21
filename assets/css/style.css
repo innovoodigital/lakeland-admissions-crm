@@ -5492,6 +5492,250 @@ html[data-theme="dark"] .lead-campaign-range {
     color: rgba(230, 236, 255, .68);
 }
 
+/* Client report page */
+.report-page {
+  display: grid;
+  gap: 16px;
+}
+
+.report-topbar p {
+  margin: 5px 0 0;
+  color: var(--slate);
+  font-size: .82rem;
+}
+
+.report-controls {
+  display: grid;
+  grid-template-columns: minmax(180px, .8fr) minmax(190px, .8fr) minmax(260px, 1.1fr);
+  gap: 14px;
+  padding: 16px !important;
+}
+
+.report-controls .field {
+  margin: 0;
+}
+
+.report-sheet {
+  display: grid;
+  gap: 18px;
+  padding: 28px;
+  border: 1px solid rgba(190, 203, 228, .78);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .86);
+  box-shadow: 0 18px 44px rgba(68, 82, 125, .1);
+}
+
+.report-brand-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgba(190, 203, 228, .76);
+}
+
+.report-brand-row span {
+  display: block;
+  color: var(--slate);
+  font-size: .75rem;
+  font-weight: 800;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+
+.report-brand-row h2 {
+  margin: 5px 0 0;
+  color: var(--ink);
+  font-size: 1.5rem;
+}
+
+.report-brand-row strong {
+  display: block;
+  color: var(--ink);
+  font-size: .95rem;
+  text-align: right;
+}
+
+.report-summary-band,
+.report-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.report-summary-band > div,
+.report-stat-card,
+.report-panel {
+  border: 1px solid rgba(190, 203, 228, .72);
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(255,255,255,.96), rgba(247,250,255,.78));
+}
+
+.report-summary-band > div {
+  padding: 14px;
+}
+
+.report-summary-band span,
+.report-stat-card span {
+  display: block;
+  color: var(--slate);
+  font-size: .66rem;
+  font-weight: 850;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+
+.report-summary-band strong {
+  display: block;
+  margin-top: 6px;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 1rem;
+}
+
+.report-stat-card {
+  --report-accent: #2f7ecb;
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  min-height: 100px;
+  padding: 17px;
+  border-left: 4px solid var(--report-accent);
+}
+
+.report-stat-card strong {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 1.65rem;
+  line-height: 1;
+}
+
+.report-stat-card.tone-green {
+  --report-accent: #22a06b;
+}
+
+.report-stat-card.tone-amber {
+  --report-accent: #c7922f;
+}
+
+.report-stat-card.tone-red {
+  --report-accent: #d94b4b;
+}
+
+.report-grid-two {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.report-panel {
+  padding: 16px;
+}
+
+.report-panel h3 {
+  margin: 0 0 12px;
+  color: var(--ink);
+  font-size: .95rem;
+}
+
+.report-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 9px 0;
+  border-top: 1px solid rgba(190, 203, 228, .56);
+}
+
+.report-row span {
+  color: var(--slate);
+  font-size: .78rem;
+}
+
+.report-row strong {
+  color: var(--ink);
+  font-family: var(--font-mono);
+}
+
+.report-footer-note {
+  padding-top: 12px;
+  border-top: 1px solid rgba(190, 203, 228, .76);
+  color: var(--slate);
+  font-size: .74rem;
+  text-align: center;
+}
+
+html[data-theme="dark"] .report-sheet,
+html[data-theme="dark"] .report-summary-band > div,
+html[data-theme="dark"] .report-stat-card,
+html[data-theme="dark"] .report-panel {
+  border-color: rgba(143, 158, 199, .22);
+  background: linear-gradient(135deg, rgba(21, 29, 52, .86), rgba(13, 19, 35, .76));
+}
+
+@media (max-width: 900px) {
+  .report-controls,
+  .report-summary-band,
+  .report-stat-grid,
+  .report-grid-two {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 620px) {
+  .report-controls,
+  .report-summary-band,
+  .report-stat-grid,
+  .report-grid-two,
+  .report-brand-row {
+    grid-template-columns: 1fr;
+  }
+
+  .report-brand-row {
+    display: grid;
+  }
+
+  .report-brand-row strong {
+    text-align: left;
+  }
+}
+
+@media print {
+  body {
+    background: #fff !important;
+  }
+
+  .sidebar,
+  .report-controls,
+  .report-print-button,
+  .toast-stack {
+    display: none !important;
+  }
+
+  .app-shell {
+    display: block !important;
+  }
+
+  .main {
+    width: 100% !important;
+    padding: 0 !important;
+  }
+
+  .report-topbar {
+    display: none !important;
+  }
+
+  .report-sheet {
+    padding: 0;
+    border: 0;
+    box-shadow: none;
+  }
+
+  .report-summary-band,
+  .report-stat-grid,
+  .report-grid-two {
+    break-inside: avoid;
+  }
+}
+
 @media (max-width: 1180px) {
     .crm-lead-overview {
         grid-template-columns: repeat(2, minmax(0, 1fr));
