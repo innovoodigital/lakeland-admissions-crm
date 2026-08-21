@@ -9,8 +9,14 @@ $active = $active ?? '';
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title><?= e($page_title ?? SITE_TITLE) ?> · <?= e(SITE_TITLE) ?></title>
+<script>
+  (function () {
+    var theme = localStorage.getItem('lakeland-theme') || 'light';
+    document.documentElement.setAttribute('data-theme', theme);
+  })();
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="<?= BASE_PATH ?>/assets/css/style.css">
 </head>
 <body>
@@ -27,8 +33,18 @@ $active = $active ?? '';
     </nav>
     <?php if ($user): ?>
     <div class="user-box">
-      Signed in as <strong><?= e($user['display_name']) ?></strong> (<?= e($user['role']) ?>)<br>
-      <a href="<?= BASE_PATH ?>/logout.php">Log out</a>
+      <div class="user-meta">
+        <span>Signed in as</span>
+        <strong><?= e($user['display_name']) ?></strong>
+        <small><?= e($user['role']) ?></small>
+      </div>
+      <button type="button" class="theme-toggle" data-theme-toggle aria-label="Switch to dark mode" aria-pressed="false">
+        <span class="theme-toggle-track">
+          <span class="theme-toggle-thumb"></span>
+        </span>
+        <span class="theme-toggle-text">Dark mode</span>
+      </button>
+      <a class="logout-link" href="<?= BASE_PATH ?>/logout.php">Log out</a>
     </div>
     <?php endif; ?>
   </aside>

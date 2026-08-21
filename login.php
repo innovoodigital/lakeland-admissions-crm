@@ -25,11 +25,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sign in · <?= e(SITE_TITLE) ?></title>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="<?= BASE_PATH ?>/assets/css/style.css">
 <style>
-  body { display:flex; align-items:center; justify-content:center; min-height:100vh; }
-  .login-card { width: 360px; }
+  body { display:flex; align-items:center; justify-content:center; min-height:100vh; padding:24px; }
+  .login-card { width: min(390px, 100%); }
   .login-card h1 { text-align:center; }
   .login-sub { text-align:center; color: var(--slate); font-size:.85rem; margin-bottom: 24px; }
 </style>
