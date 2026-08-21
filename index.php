@@ -61,6 +61,13 @@ function dashboard_latest_followup_join(
         return '';
     }
 
+    return "LEFT JOIN follow_ups {$latestAlias}
+            ON {$latestAlias}.id = "
+            . dashboard_latest_followup_id_sql($db, "{$leadAlias}.id");
+}
+
+function dashboard_latest_followup_id_sql(PDO $db, string $leadIdSql): string
+{
     $orderParts = [];
 
     if (dashboard_column_exists($db, 'follow_ups', 'followup_number')) {
@@ -77,14 +84,13 @@ function dashboard_latest_followup_join(
 
     $orderParts[] = 'f_latest.id DESC';
 
-    return "LEFT JOIN follow_ups {$latestAlias}
-            ON {$latestAlias}.id = (
-                SELECT f_latest.id
-                FROM follow_ups f_latest
-                WHERE f_latest.lead_id = {$leadAlias}.id
-                ORDER BY " . implode(', ', $orderParts) . '
-                LIMIT 1
-            )';
+    return '(
+        SELECT f_latest.id
+        FROM follow_ups f_latest
+        WHERE f_latest.lead_id = ' . $leadIdSql . '
+        ORDER BY ' . implode(', ', $orderParts) . '
+        LIMIT 1
+    )';
 }
 
 function dashboard_effective_status_sql(
@@ -148,7 +154,7 @@ function dashboard_phone_href(array $row): string
 
 function dashboard_status_label(array $row): string
 {
-    return status_label((string)($row['status'] ?? 'new'));
+    return status_label((string)($row['effective_status'] ?? $row['status'] ?? 'new'));
 }
 
 function dashboard_add_action(
@@ -371,12 +377,28 @@ if (
     $timeOrder = dashboard_column_exists($db, 'lead_reminders', 'reminder_time')
         ? 'r.reminder_time ASC,'
         : '';
+    $latestReminderSql = (
+        dashboard_has_latest_followup_status($db)
+        && dashboard_column_exists($db, 'lead_reminders', 'followup_id')
+    )
+        ? ' AND (
+              r.followup_id IS NULL
+              OR r.followup_id = ' . dashboard_latest_followup_id_sql($db, 'l.id') . '
+            )'
+        : '';
+    $reminderLatestJoin = dashboard_has_latest_followup_status($db)
+        ? $latestFollowupJoin
+        : '';
+    $reminderEffectiveStatusSelect = dashboard_has_latest_followup_status($db)
+        ? ", {$effectiveStatusSql} AS effective_status"
+        : '';
 
     $stmt = $db->prepare(
-        "SELECT r.*, l.*
+        "SELECT r.*, l.* {$reminderEffectiveStatusSelect}
          FROM lead_reminders r
          INNER JOIN leads l ON l.id = r.lead_id
-         WHERE r.reminder_date = ? {$statusSql}
+         {$reminderLatestJoin}
+         WHERE r.reminder_date = ? {$statusSql} {$latestReminderSql}
          ORDER BY {$timeOrder} l.child_name ASC
          LIMIT 12"
     );
@@ -395,10 +417,11 @@ if (
     }
 
     $stmt = $db->prepare(
-        "SELECT r.*, l.*
+        "SELECT r.*, l.* {$reminderEffectiveStatusSelect}
          FROM lead_reminders r
          INNER JOIN leads l ON l.id = r.lead_id
-         WHERE r.reminder_date < ? {$statusSql}
+         {$reminderLatestJoin}
+         WHERE r.reminder_date < ? {$statusSql} {$latestReminderSql}
          ORDER BY r.reminder_date ASC, {$timeOrder} l.child_name ASC
          LIMIT 12"
     );
@@ -418,11 +441,21 @@ if (
 }
 
 if (dashboard_column_exists($db, 'follow_ups', 'next_action_date')) {
+    $latestFollowupOnlySql = dashboard_has_latest_followup_status($db)
+        ? ' AND f.id = ' . dashboard_latest_followup_id_sql($db, 'l.id')
+        : '';
+
     $stmt = $db->prepare(
-        'SELECT l.*, f.next_action_date, f.followup_time
+        'SELECT l.*, f.next_action_date, f.followup_time'
+        . (
+            dashboard_column_exists($db, 'follow_ups', 'lead_status')
+                ? ', f.lead_status AS effective_status'
+                : ''
+        ) . '
          FROM follow_ups f
          INNER JOIN leads l ON l.id = f.lead_id
          WHERE f.next_action_date = ?
+         ' . $latestFollowupOnlySql . '
          ORDER BY f.followup_time ASC, l.child_name ASC
          LIMIT 12'
     );
@@ -441,10 +474,16 @@ if (dashboard_column_exists($db, 'follow_ups', 'next_action_date')) {
     }
 
     $stmt = $db->prepare(
-        'SELECT l.*, f.next_action_date, f.followup_time
+        'SELECT l.*, f.next_action_date, f.followup_time'
+        . (
+            dashboard_column_exists($db, 'follow_ups', 'lead_status')
+                ? ', f.lead_status AS effective_status'
+                : ''
+        ) . '
          FROM follow_ups f
          INNER JOIN leads l ON l.id = f.lead_id
          WHERE f.next_action_date < ?
+         ' . $latestFollowupOnlySql . '
          ORDER BY f.next_action_date ASC, f.followup_time ASC, l.child_name ASC
          LIMIT 12'
     );
@@ -466,9 +505,11 @@ if (dashboard_column_exists($db, 'follow_ups', 'next_action_date')) {
 $visitCompleteStatuses = "'visited','converted','joined','placement_test_scheduled','placement_test_completed'";
 
 $stmt = $db->prepare(
-    "SELECT *
-     FROM leads
-     WHERE visit_date = ?
+    "SELECT l.*, {$effectiveStatusSql} AS effective_status
+     FROM leads l
+     {$latestFollowupJoin}
+     WHERE l.visit_date = ?
+       AND {$effectiveStatusSql} = 'visit_scheduled'
      ORDER BY child_name ASC
      LIMIT 12"
 );
@@ -487,10 +528,11 @@ foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
 }
 
 $stmt = $db->prepare(
-    "SELECT *
-     FROM leads
-     WHERE visit_date < ?
-       AND status NOT IN ({$visitCompleteStatuses})
+    "SELECT l.*, {$effectiveStatusSql} AS effective_status
+     FROM leads l
+     {$latestFollowupJoin}
+     WHERE l.visit_date < ?
+       AND {$effectiveStatusSql} = 'visit_scheduled'
      ORDER BY visit_date ASC, child_name ASC
      LIMIT 12"
 );
@@ -509,9 +551,11 @@ foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
 }
 
 $stmt = $db->prepare(
-    "SELECT *
-     FROM leads
-     WHERE visit_date BETWEEN ? AND ?
+    "SELECT l.*, {$effectiveStatusSql} AS effective_status
+     FROM leads l
+     {$latestFollowupJoin}
+     WHERE l.visit_date BETWEEN ? AND ?
+       AND {$effectiveStatusSql} = 'visit_scheduled'
      ORDER BY visit_date ASC, child_name ASC
      LIMIT 10"
 );
@@ -539,19 +583,28 @@ if (
         : 'NULL';
 
     $scheduleJoin = '';
-    if (dashboard_column_exists($db, 'followup_schedule_options', 'lead_id')) {
-        $scheduleJoin = 'INNER JOIN leads l ON l.id = s.lead_id';
-    } elseif (dashboard_column_exists($db, 'followup_schedule_options', 'followup_id')) {
+    $scheduleLatestSql = '';
+    $scheduleEffectiveStatusSelect = '';
+    if (dashboard_column_exists($db, 'followup_schedule_options', 'followup_id')) {
         $scheduleJoin = 'INNER JOIN follow_ups f ON f.id = s.followup_id INNER JOIN leads l ON l.id = f.lead_id';
+        $scheduleLatestSql = dashboard_has_latest_followup_status($db)
+            ? ' AND f.id = ' . dashboard_latest_followup_id_sql($db, 'l.id')
+            : '';
+        $scheduleEffectiveStatusSelect = dashboard_column_exists($db, 'follow_ups', 'lead_status')
+            ? ', f.lead_status AS effective_status'
+            : '';
+    } elseif (dashboard_column_exists($db, 'followup_schedule_options', 'lead_id')) {
+        $scheduleJoin = 'INNER JOIN leads l ON l.id = s.lead_id';
     }
 
     if ($scheduleJoin !== '') {
         $stmt = $db->prepare(
-            "SELECT l.*, s.schedule_type, s.option_date, {$scheduleTimeColumn} AS schedule_time
+            "SELECT l.*, s.schedule_type, s.option_date, {$scheduleTimeColumn} AS schedule_time {$scheduleEffectiveStatusSelect}
              FROM followup_schedule_options s
              {$scheduleJoin}
              WHERE s.option_date = ?
                AND s.schedule_type IN ('visit_preference', 'confirmed_visit', 'placement_test', 'enrollment')
+               {$scheduleLatestSql}
              ORDER BY schedule_time ASC, l.child_name ASC
              LIMIT 12"
         );
@@ -571,11 +624,12 @@ if (
         }
 
         $stmt = $db->prepare(
-            "SELECT l.*, s.schedule_type, s.option_date, {$scheduleTimeColumn} AS schedule_time
+            "SELECT l.*, s.schedule_type, s.option_date, {$scheduleTimeColumn} AS schedule_time {$scheduleEffectiveStatusSelect}
              FROM followup_schedule_options s
              {$scheduleJoin}
              WHERE s.option_date BETWEEN ? AND ?
                AND s.schedule_type IN ('visit_preference', 'confirmed_visit')
+               {$scheduleLatestSql}
              ORDER BY s.option_date ASC, schedule_time ASC, l.child_name ASC
              LIMIT 10"
         );
