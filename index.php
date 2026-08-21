@@ -4,8 +4,9 @@ require_once __DIR__ . '/includes/helpers.php';
 require_login();
 
 $db = get_db();
-$ym = $_GET['month'] ?? date('Y-m');
-[$monthStart, $monthEnd, $ym] = month_bounds($ym);
+$requestedMonth = trim((string)($_GET['month'] ?? ''));
+$hasDashboardDateFilter = preg_match('/^\d{4}-\d{2}$/', $requestedMonth) === 1;
+$ym = $hasDashboardDateFilter ? $requestedMonth : '';
 
 $active_statuses = "'new','contacted','high_quality','follow_up','visit_scheduled'";
 
@@ -288,12 +289,23 @@ function dashboard_count_leads(
 
     return (int)$stmt->fetchColumn();
 }
-
-$campaignWindows = dashboard_campaign_windows($ym);
+$todayDate = date('Y-m-d');
+$campaignWindows = $hasDashboardDateFilter
+    ? dashboard_campaign_windows($ym)
+    : [];
+$campaignWindows = array_values(
+    array_filter(
+        $campaignWindows,
+        static fn($window) => $window['start'] <= $todayDate
+    )
+);
 $selectedCampaign = trim((string)($_GET['campaign'] ?? 'all'));
 $validCampaignKeys = array_column($campaignWindows, 'key');
 
-if ($selectedCampaign !== 'all' && !in_array($selectedCampaign, $validCampaignKeys, true)) {
+if (
+    !$hasDashboardDateFilter
+    || ($selectedCampaign !== 'all' && !in_array($selectedCampaign, $validCampaignKeys, true))
+) {
     $selectedCampaign = 'all';
 }
 
@@ -305,14 +317,23 @@ foreach ($campaignWindows as $window) {
     }
 }
 
-$start = $selectedWindow['start'] ?? $campaignWindows[0]['start'];
-$end = $selectedWindow['end'] ?? $campaignWindows[count($campaignWindows) - 1]['end'];
-$campaignRangeLabel = $selectedWindow
-    ? $selectedWindow['label'] . ' (' . $selectedWindow['display'] . ')'
-    : 'All campaigns (' . $campaignWindows[0]['display'] . ' to '
-        . $campaignWindows[count($campaignWindows) - 1]['display'] . ')';
+if (!$hasDashboardDateFilter) {
+    $start = '1000-01-01';
+    $end = '9999-12-31';
+    $campaignRangeLabel = 'All months and all campaigns';
+} elseif (!$campaignWindows) {
+    $start = '9999-01-01';
+    $end = '9999-01-01';
+    $campaignRangeLabel = 'No campaigns have started for this month yet';
+} else {
+    $start = $selectedWindow['start'] ?? $campaignWindows[0]['start'];
+    $end = $selectedWindow['end'] ?? $campaignWindows[count($campaignWindows) - 1]['end'];
+    $campaignRangeLabel = $selectedWindow
+        ? $selectedWindow['label'] . ' (' . $selectedWindow['display'] . ')'
+        : 'All campaigns (' . $campaignWindows[0]['display'] . ' to '
+            . $campaignWindows[count($campaignWindows) - 1]['display'] . ')';
+}
 
-$todayDate = date('Y-m-d');
 $tomorrowDate = (new DateTime('tomorrow'))->format('Y-m-d');
 $nextWeekDate = (new DateTime('+7 days'))->format('Y-m-d');
 $yesterdayDate = (new DateTime('yesterday'))->format('Y-m-d');
@@ -1010,12 +1031,16 @@ require __DIR__ . '/includes/layout_top.php';
     <div class="field dashboard-month-field">
       <label for="campaign">Campaign</label>
       <select id="campaign" name="campaign" onchange="this.form.submit()">
-        <option value="all" <?= $selectedCampaign === 'all' ? 'selected' : '' ?>>All campaigns</option>
-        <?php foreach ($campaignWindows as $window): ?>
-          <option value="<?= e($window['key']) ?>" <?= $selectedCampaign === $window['key'] ? 'selected' : '' ?>>
-            <?= e($window['label'] . ' - ' . $window['display']) ?>
-          </option>
-        <?php endforeach; ?>
+        <?php if (!$hasDashboardDateFilter): ?>
+          <option value="all" selected>All campaigns</option>
+        <?php else: ?>
+          <option value="all" <?= $selectedCampaign === 'all' ? 'selected' : '' ?>>All campaigns</option>
+          <?php foreach ($campaignWindows as $window): ?>
+            <option value="<?= e($window['key']) ?>" <?= $selectedCampaign === $window['key'] ? 'selected' : '' ?>>
+              <?= e($window['label'] . ' - ' . $window['display']) ?>
+            </option>
+          <?php endforeach; ?>
+        <?php endif; ?>
       </select>
     </div>
     <div class="dashboard-campaign-range"><?= e($campaignRangeLabel) ?></div>
