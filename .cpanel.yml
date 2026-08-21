@@ -1,0 +1,19 @@
+---
+deployment:
+  tasks:
+    - export DEPLOYPATH=$HOME/lakeland.innovoosolutions.com/
+    - /bin/cp -R assets $DEPLOYPATH
+    - /bin/cp -R includes $DEPLOYPATH
+    - /bin/cp -R tools $DEPLOYPATH
+    - /bin/cp -R sql $DEPLOYPATH
+    - /bin/cp .htaccess $DEPLOYPATH
+    - /bin/cp followup_action.php $DEPLOYPATH
+    - /bin/cp import_csv.php $DEPLOYPATH
+    - /bin/cp index.php $DEPLOYPATH
+    - /bin/cp leads.php $DEPLOYPATH
+    - /bin/cp lead_action.php $DEPLOYPATH
+    - /bin/cp lead_form.php $DEPLOYPATH
+    - /bin/cp lead_view.php $DEPLOYPATH
+    - /bin/cp login.php $DEPLOYPATH
+    - /bin/cp logout.php $DEPLOYPATH
+    - /bin/cp reminder_action.php $DEPLOYPATH
