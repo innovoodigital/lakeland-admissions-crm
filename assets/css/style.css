@@ -9690,6 +9690,9 @@ html[data-theme="dark"] .visit-goal-card .register .slot.filled {
 .dashboard-month-filter {
   margin: 0 !important;
   align-items: stretch;
+  display: grid !important;
+  grid-template-columns: 190px minmax(230px, 280px);
+  gap: 10px !important;
 }
 
 .dashboard-month-field {
@@ -9707,8 +9710,9 @@ html[data-theme="dark"] .visit-goal-card .register .slot.filled {
   text-transform: uppercase !important;
 }
 
-.dashboard-month-field input[type=month] {
-  width: 190px !important;
+.dashboard-month-field input[type=month],
+.dashboard-month-field select {
+  width: 100% !important;
   height: 46px !important;
   padding: 0 42px 0 14px !important;
   border: 1px solid rgba(190, 203, 228, .95) !important;
@@ -9723,16 +9727,43 @@ html[data-theme="dark"] .visit-goal-card .register .slot.filled {
   transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
 }
 
-.dashboard-month-field input[type=month]:hover {
+.dashboard-month-field select {
+  appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #607091 50%),
+    linear-gradient(135deg, #607091 50%, transparent 50%),
+    linear-gradient(135deg, rgba(255, 255, 255, .96), rgba(247, 250, 255, .9)) !important;
+  background-position:
+    calc(100% - 18px) 20px,
+    calc(100% - 13px) 20px,
+    0 0 !important;
+  background-size: 5px 5px, 5px 5px, 100% 100% !important;
+  background-repeat: no-repeat !important;
+  font-family: var(--font-body) !important;
+}
+
+.dashboard-month-field input[type=month]:hover,
+.dashboard-month-field select:hover {
   border-color: rgba(114, 133, 225, .65) !important;
   transform: translateY(-1px);
 }
 
-.dashboard-month-field input[type=month]:focus {
+.dashboard-month-field input[type=month]:focus,
+.dashboard-month-field select:focus {
   border-color: #655cf0 !important;
   box-shadow:
     0 12px 28px rgba(79, 70, 229, .12),
     0 0 0 4px rgba(101, 92, 240, .14) !important;
+  outline: none;
+}
+
+.dashboard-campaign-range {
+  grid-column: 1 / -1;
+  margin-top: -3px;
+  color: var(--slate);
+  font-size: .68rem;
+  font-weight: 800;
+  text-align: right;
 }
 
 .dashboard-month-field input[type=month]::-webkit-calendar-picker-indicator {
@@ -9754,7 +9785,8 @@ html[data-theme="dark"] .dashboard-month-field label {
   color: #b7c3de !important;
 }
 
-html[data-theme="dark"] .dashboard-month-field input[type=month] {
+html[data-theme="dark"] .dashboard-month-field input[type=month],
+html[data-theme="dark"] .dashboard-month-field select {
   background:
     linear-gradient(135deg, rgba(20, 29, 52, .96), rgba(16, 23, 42, .9)) !important;
   border-color: rgba(155, 170, 210, .34) !important;
@@ -9765,8 +9797,21 @@ html[data-theme="dark"] .dashboard-month-field input[type=month] {
 }
 
 html[data-theme="dark"] .dashboard-month-field input[type=month]:hover,
-html[data-theme="dark"] .dashboard-month-field input[type=month]:focus {
+html[data-theme="dark"] .dashboard-month-field input[type=month]:focus,
+html[data-theme="dark"] .dashboard-month-field select:hover,
+html[data-theme="dark"] .dashboard-month-field select:focus {
   border-color: rgba(157, 154, 255, .66) !important;
+}
+
+html[data-theme="dark"] .dashboard-month-field select {
+  background-image:
+    linear-gradient(45deg, transparent 50%, #d8ddff 50%),
+    linear-gradient(135deg, #d8ddff 50%, transparent 50%),
+    linear-gradient(135deg, rgba(20, 29, 52, .96), rgba(16, 23, 42, .9)) !important;
+}
+
+html[data-theme="dark"] .dashboard-campaign-range {
+  color: rgba(230, 236, 255, .72);
 }
 
 html[data-theme="dark"] .dashboard-month-field input[type=month]::-webkit-calendar-picker-indicator {
@@ -9777,8 +9822,137 @@ html[data-theme="dark"] .dashboard-month-field input[type=month]::-webkit-calend
 @media (max-width: 620px) {
   .dashboard-month-filter,
   .dashboard-month-field,
-  .dashboard-month-field input[type=month] {
+  .dashboard-month-field input[type=month],
+  .dashboard-month-field select {
     width: 100% !important;
+  }
+
+  .dashboard-month-filter {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-campaign-range {
+    text-align: left;
+  }
+}
+
+/* Campaign stats board */
+.campaign-stat-board {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 14px 0;
+}
+
+.campaign-stat-cell {
+  --campaign-stat-accent: #2f7ecb;
+  --campaign-stat-soft: rgba(47, 126, 203, .12);
+  position: relative;
+  display: grid;
+  align-content: center;
+  gap: 7px;
+  min-height: 104px;
+  padding: 18px 18px 16px;
+  overflow: hidden;
+  border: 1px solid rgba(190, 203, 228, .74);
+  border-left: 4px solid var(--campaign-stat-accent);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, .94), rgba(247, 250, 255, .78));
+  box-shadow:
+    0 14px 34px rgba(68, 82, 125, .08),
+    inset 0 1px 0 rgba(255, 255, 255, .82);
+}
+
+.campaign-stat-cell::after {
+  content: "";
+  position: absolute;
+  right: -30px;
+  top: -36px;
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  background: var(--campaign-stat-soft);
+}
+
+.campaign-stat-cell strong {
+  position: relative;
+  z-index: 1;
+  color: #102044;
+  font-family: var(--font-mono);
+  font-size: 1.65rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.campaign-stat-cell span {
+  position: relative;
+  z-index: 1;
+  max-width: 170px;
+  color: #596986;
+  font-size: .72rem;
+  font-weight: 850;
+  letter-spacing: .05em;
+  line-height: 1.25;
+  text-transform: uppercase;
+}
+
+.campaign-stat-cell.tone-blue {
+  --campaign-stat-accent: #2f7ecb;
+  --campaign-stat-soft: rgba(47, 126, 203, .13);
+}
+
+.campaign-stat-cell.tone-green {
+  --campaign-stat-accent: #22a06b;
+  --campaign-stat-soft: rgba(34, 160, 107, .13);
+}
+
+.campaign-stat-cell.tone-red {
+  --campaign-stat-accent: #d94b4b;
+  --campaign-stat-soft: rgba(217, 75, 75, .13);
+}
+
+.campaign-stat-cell.tone-green strong,
+.campaign-stat-cell.tone-green span {
+  color: #128251;
+}
+
+.campaign-stat-cell.tone-red strong,
+.campaign-stat-cell.tone-red span {
+  color: #b82929;
+}
+
+html[data-theme="dark"] .campaign-stat-board {
+  background: transparent;
+}
+
+html[data-theme="dark"] .campaign-stat-cell {
+  border-color: rgba(143, 158, 199, .18);
+  background:
+    linear-gradient(135deg, rgba(21, 29, 52, .84), rgba(13, 19, 35, .76));
+  box-shadow:
+    0 16px 36px rgba(0, 0, 0, .22),
+    inset 0 1px 0 rgba(255, 255, 255, .05);
+}
+
+html[data-theme="dark"] .campaign-stat-cell strong,
+html[data-theme="dark"] .campaign-stat-cell span {
+  color: #d8e6ff;
+}
+
+html[data-theme="dark"] .campaign-stat-cell.tone-green strong,
+html[data-theme="dark"] .campaign-stat-cell.tone-green span {
+  color: #86efac;
+}
+
+html[data-theme="dark"] .campaign-stat-cell.tone-red strong,
+html[data-theme="dark"] .campaign-stat-cell.tone-red span {
+  color: #fca5a5;
+}
+
+@media (max-width: 780px) {
+  .campaign-stat-board {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -10157,6 +10331,8 @@ html[data-theme="dark"] .dashboard-kpi .num span {
 .dashboard-lead-list {
   display: grid;
   gap: 8px;
+  align-content: start;
+  align-items: start;
 }
 
 .dashboard-action-item,
@@ -10166,6 +10342,7 @@ html[data-theme="dark"] .dashboard-kpi .num span {
   gap: 12px;
   align-items: center;
   min-height: 64px;
+  align-self: start;
   padding: 10px 11px;
   border: 1px solid rgba(219, 227, 244, .86);
   border-left: 4px solid #655cf0;
