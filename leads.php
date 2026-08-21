@@ -77,6 +77,69 @@ function leads_parent_response_tone(string $response): string
     };
 }
 
+function leads_parent_response_filter_key(string $response): string
+{
+    $response = normalize_parent_response($response);
+
+    return match ($response) {
+        'interested' => 'interested',
+        'still_considering', 'pending', 'call_back_later', 'will_call_back' => 'still_considering',
+        'no_response', 'not_reached', 'number_not_working' => 'no_response',
+        default => 'not_interested',
+    };
+}
+
+function leads_unique_filter_options(array $values, callable $normalizer, callable $labeler): array
+{
+    $options = [];
+    $seenLabels = [];
+
+    foreach ($values as $value) {
+        $normalized = $normalizer((string)$value);
+        $label = trim((string)$labeler($normalized));
+        $labelKey = strtolower($label);
+
+        if (
+            $normalized === ''
+            || isset($options[$normalized])
+            || isset($seenLabels[$labelKey])
+        ) {
+            continue;
+        }
+
+        $options[$normalized] = $label;
+        $seenLabels[$labelKey] = true;
+    }
+
+    return $options;
+}
+
+function leads_grade_filter_key(string $grade): string
+{
+    $grade = strtolower(trim($grade));
+    $grade = str_replace(['_', '-'], ' ', $grade);
+    $grade = preg_replace('/\s+/', ' ', $grade) ?? $grade;
+
+    if (preg_match('/(?:grade\s*)?(\d{1,2})/', $grade, $matches)) {
+        $gradeNumber = (int)$matches[1];
+
+        if ($gradeNumber >= 1 && $gradeNumber <= 11) {
+            return 'grade_' . $gradeNumber;
+        }
+    }
+
+    return $grade;
+}
+
+function leads_grade_filter_label(string $grade): string
+{
+    if (preg_match('/^grade_(\d{1,2})$/', $grade, $matches)) {
+        return 'Grade ' . (int)$matches[1];
+    }
+
+    return ucwords(str_replace('_', ' ', $grade));
+}
+
 function leads_quality_insight(int $score, string $workflow, string $parentResponse, array $followups, array $inquiries): array
 {
     $label = leads_quality_label($score);
@@ -255,13 +318,165 @@ function leads_reminder_state(array $reminders): array
     return ['class'=>'future','label'=>'Upcoming','next'=>$next,'count'=>count($pending)];
 }
 
-$today = new DateTime('today');
-$defaultStart = (clone $today)->modify('-29 days')->format('Y-m-d');
-$defaultEnd = $today->format('Y-m-d');
+function leads_campaign_windows(string $month): array
+{
+    if (!preg_match('/^\d{4}-\d{2}$/', $month)) {
+        $month = date('Y-m');
+    }
 
-$startDate = trim((string)($_GET['start_date'] ?? $defaultStart));
-$endDate = trim((string)($_GET['end_date'] ?? $defaultEnd));
+    $firstDay = DateTime::createFromFormat('!Y-m-d', $month . '-01') ?: new DateTime('first day of this month');
+    $firstFriday = clone $firstDay;
+    if ($firstFriday->format('N') !== '5') {
+        $firstFriday->modify('next friday');
+    }
+
+    $windows = [];
+    for ($i = 1; $i <= 4; $i++) {
+        $start = clone $firstFriday;
+        $start->modify('+' . (($i - 1) * 7) . ' days');
+        $end = clone $start;
+        $end->modify('+4 days');
+        $windows[] = [
+            'key' => 'campaign_' . $i,
+            'label' => 'Campaign ' . $i,
+            'start' => $start->format('Y-m-d'),
+            'end' => $end->format('Y-m-d'),
+            'display' => $start->format('j M') . ' - ' . $end->format('j M'),
+        ];
+    }
+
+    return $windows;
+}
+
+function leads_month_options(string $selectedMonth): array
+{
+    $base = new DateTime('first day of this month');
+    $months = [];
+    for ($i = -6; $i <= 3; $i++) {
+        $month = (clone $base)->modify(($i >= 0 ? '+' : '') . $i . ' months');
+        $months[$month->format('Y-m')] = $month->format('F Y');
+    }
+
+    if (!isset($months[$selectedMonth]) && preg_match('/^\d{4}-\d{2}$/', $selectedMonth)) {
+        $selected = DateTime::createFromFormat('!Y-m-d', $selectedMonth . '-01');
+        if ($selected) {
+            $months[$selectedMonth] = $selected->format('F Y');
+            ksort($months);
+        }
+    }
+
+    return $months;
+}
+
+function leads_campaign_for_date(?string $date, array $campaignWindows): string
+{
+    if (!$date) return '';
+    foreach ($campaignWindows as $window) {
+        if ($date >= $window['start'] && $date <= $window['end']) {
+            return $window['label'];
+        }
+    }
+    return '';
+}
+
+function leads_trim_text(string $value, int $width, string $suffix = '...'): string
+{
+    if (function_exists('mb_strimwidth')) {
+        return mb_strimwidth($value, 0, $width, $suffix);
+    }
+    return strlen($value) > $width ? substr($value, 0, max(0, $width - strlen($suffix))) . $suffix : $value;
+}
+
+function leads_visit_appointment_date(array $lead, array $followups, ?DateTime $nextFollowup): ?DateTime
+{
+    if (!empty($lead['visit_date'])) {
+        return leads_dt($lead['visit_date']);
+    }
+
+    foreach ($followups as $followup) {
+        $status = normalize_workflow_status($followup['lead_status'] ?? '');
+        if ($status === 'visit_scheduled' && !empty($followup['next_action_date'])) {
+            return leads_dt($followup['next_action_date'] ?? null, $followup['next_action_time'] ?? null);
+        }
+    }
+
+    return $nextFollowup;
+}
+
+function leads_visit_bucket(string $workflow, string $parentResponse, ?DateTime $appointmentDate): string
+{
+    if (in_array($workflow, ['visited','placement_test_scheduled','placement_test_completed','joined'], true)) {
+        return 'visited';
+    }
+
+    if ($workflow === 'visit_scheduled') {
+        if ($appointmentDate && $appointmentDate < new DateTime('today')) {
+            return 'missed_appointments';
+        }
+        return 'planned_visits';
+    }
+
+    if (in_array($workflow, ['visit_interested','visit_requested'], true) || $parentResponse === 'interested') {
+        return 'pending_visits';
+    }
+
+    return '';
+}
+
+$today = new DateTime('today');
+$selectedMonth = trim((string)($_GET['campaign_month'] ?? $today->format('Y-m')));
+if (!preg_match('/^\d{4}-\d{2}$/', $selectedMonth)) {
+    $selectedMonth = $today->format('Y-m');
+}
+$campaignWindows = leads_campaign_windows($selectedMonth);
+$monthOptions = leads_month_options($selectedMonth);
+$selectedCampaign = trim((string)($_GET['campaign'] ?? 'all'));
+$validCampaignKeys = array_column($campaignWindows, 'key');
+if ($selectedCampaign !== 'all' && !in_array($selectedCampaign, $validCampaignKeys, true)) {
+    $selectedCampaign = 'all';
+}
+$selectedWindow = null;
+foreach ($campaignWindows as $window) {
+    if ($window['key'] === $selectedCampaign) {
+        $selectedWindow = $window;
+        break;
+    }
+}
+$campaignRangeStart = $selectedWindow['start'] ?? $campaignWindows[0]['start'];
+$campaignRangeEnd = $selectedWindow['end'] ?? $campaignWindows[count($campaignWindows) - 1]['end'];
+$campaignRangeLabel = $selectedWindow
+    ? $selectedWindow['label'] . ' (' . $selectedWindow['display'] . ')'
+    : 'All campaigns (' . $campaignWindows[0]['display'] . ' to ' . $campaignWindows[count($campaignWindows) - 1]['display'] . ')';
+
+$startDate = $campaignRangeStart;
+$endDate = $campaignRangeEnd;
 $q = trim((string)($_GET['q'] ?? ''));
+$selectedVisitView = trim((string)($_GET['visit_view'] ?? ''));
+$visitViewMeta = [
+    'pending_visits' => [
+        'label' => 'Pending Visits',
+        'short' => 'Interested, no date',
+        'description' => 'People who are interested to visit the school but have not fixed a date yet.',
+    ],
+    'planned_visits' => [
+        'label' => 'Planned Visits',
+        'short' => 'Booked appointments',
+        'description' => 'People who already booked an appointment to visit the school.',
+    ],
+    'visited' => [
+        'label' => 'Visited',
+        'short' => 'Completed visits',
+        'description' => 'People who visited the school or moved into the next admission stage.',
+    ],
+    'missed_appointments' => [
+        'label' => 'Missed Appointments',
+        'short' => 'Did not visit',
+        'description' => 'People who had a scheduled visit date that has already passed without a visit update.',
+    ],
+];
+if (!isset($visitViewMeta[$selectedVisitView])) {
+    $selectedVisitView = '';
+}
 $selectedStatuses = $_GET['status'] ?? [];
 $selectedGrades = $_GET['grade'] ?? [];
 $selectedQualities = $_GET['quality'] ?? [];
@@ -270,6 +485,13 @@ $selectedParentResponses = $_GET['parent_response'] ?? [];
 foreach (['selectedStatuses','selectedGrades','selectedQualities','selectedParentResponses'] as $name) {
     if (!is_array($$name)) $$name = [$$name];
     $$name = array_values(array_filter(array_map('strval', $$name)));
+}
+$selectedStatuses = array_values(array_unique(array_map('normalize_workflow_status', $selectedStatuses)));
+$selectedParentResponses = array_values(array_unique(array_map('leads_parent_response_filter_key', $selectedParentResponses)));
+$selectedQualities = array_values(array_unique($selectedQualities));
+$selectedGrades = array_values(array_unique(array_map('leads_grade_filter_key', $selectedGrades)));
+if ($selectedVisitView !== '') {
+    $selectedStatuses = [];
 }
 
 $where = [];
@@ -314,6 +536,7 @@ if ($leadIds) {
 
 $rows = [];
 $availableGrades = [];
+$visitViewCounts = array_fill_keys(array_keys($visitViewMeta), 0);
 
 foreach ($rawLeads as $lead) {
     $id = (int)$lead['id'];
@@ -331,15 +554,8 @@ foreach ($rawLeads as $lead) {
     $group = leads_quality_group($quality);
     $qualityKey = leads_quality_key($quality);
     $grade = trim((string)($lead['grade'] ?? ''));
-    if ($grade !== '') $availableGrades[$grade] = $grade;
-
-    if ($selectedStatuses && !in_array($workflow, $selectedStatuses, true)) continue;
-    if ($selectedGrades && !in_array($grade, $selectedGrades, true)) continue;
-    if ($selectedParentResponses && !in_array($parentResponse, $selectedParentResponses, true)) continue;
-    if ($selectedQualities
-        && !in_array($qualityKey, $selectedQualities, true)
-        && !in_array($group, $selectedQualities, true)
-    ) continue;
+    $gradeKey = leads_grade_filter_key($grade);
+    if ($gradeKey !== '') $availableGrades[$gradeKey] = leads_grade_filter_label($gradeKey);
 
     $nextFollowup = null;
     foreach ($followups as $f) {
@@ -347,15 +563,39 @@ foreach ($rawLeads as $lead) {
         if ($candidate && (!$nextFollowup || $candidate < $nextFollowup)) $nextFollowup = $candidate;
     }
 
+    $visitAppointment = leads_visit_appointment_date($lead, $followups, $nextFollowup);
+    $visitBucket = leads_visit_bucket($workflow, $parentResponse, $visitAppointment);
+    if ($visitBucket !== '' && isset($visitViewCounts[$visitBucket])) {
+        $visitViewCounts[$visitBucket]++;
+    }
+    if ($selectedVisitView !== '' && $visitBucket !== $selectedVisitView) continue;
+    if ($selectedStatuses && !in_array($workflow, $selectedStatuses, true)) continue;
+    if ($selectedGrades && !in_array($gradeKey, $selectedGrades, true)) continue;
+    if ($selectedParentResponses && !in_array(leads_parent_response_filter_key($parentResponse), $selectedParentResponses, true)) continue;
+    if ($selectedQualities
+        && !in_array($qualityKey, $selectedQualities, true)
+        && !in_array($group, $selectedQualities, true)
+    ) continue;
+
     $rows[] = [
         'lead'=>$lead,'followups'=>$followups,'inquiries'=>$inquiries,'reminders'=>$reminders,
         'workflow'=>$workflow,'parent_response'=>$parentResponse,'latest_followup'=>$latest,'quality'=>$quality,'quality_group'=>$group,'quality_key'=>$qualityKey,
+        'grade_key'=>$gradeKey,
         'quality_label'=>leads_quality_label($quality),
         'reminder_state'=>leads_reminder_state($reminders),
         'next_followup'=>$nextFollowup,'first_inquiry'=>$inquiries[0] ?? null,
+        'visit_bucket'=>$visitBucket,'visit_appointment'=>$visitAppointment,
     ];
 }
-ksort($availableGrades, SORT_NATURAL | SORT_FLAG_CASE);
+uksort(
+    $availableGrades,
+    static function (string $a, string $b): int {
+        $aNumber = preg_match('/^grade_(\d+)$/', $a, $aMatch) ? (int)$aMatch[1] : PHP_INT_MAX;
+        $bNumber = preg_match('/^grade_(\d+)$/', $b, $bMatch) ? (int)$bMatch[1] : PHP_INT_MAX;
+
+        return $aNumber <=> $bNumber ?: strnatcasecmp($a, $b);
+    }
+);
 
 $total = count($rows);
 $ongoing = $scheduled = $visited = $missed = 0;
@@ -389,6 +629,41 @@ function leads_page_url(array $changes = []): string
     }
     return 'leads.php' . ($query ? '?' . http_build_query($query) : '');
 }
+
+$statusFilterOptions = leads_unique_filter_options(
+    [
+        'new',
+        'contacted',
+        'follow_up_required',
+        'visit_interested',
+        'visit_scheduled',
+        'visited',
+        'placement_test_scheduled',
+        'placement_test_completed',
+        'joined',
+        'closed',
+    ],
+    'normalize_workflow_status',
+    'leads_workflow_label'
+);
+
+$gradeFilterOptions = [];
+for ($gradeNumber = 1; $gradeNumber <= 11; $gradeNumber++) {
+    $gradeKey = 'grade_' . $gradeNumber;
+    $gradeFilterOptions[$gradeKey] = leads_grade_filter_label($gradeKey);
+}
+$gradeFilterOptions += $availableGrades;
+
+$parentResponseFilterOptions = leads_unique_filter_options(
+    [
+        'interested',
+        'still_considering',
+        'no_response',
+        'not_interested',
+    ],
+    'leads_parent_response_filter_key',
+    'leads_parent_response_label_short'
+);
 
 require __DIR__ . '/includes/layout_top.php';
 ?>
@@ -555,12 +830,48 @@ require __DIR__ . '/includes/layout_top.php';
 .crm-preset-trigger{padding:0 10px!important}
 @media(max-width:1050px){.crm-actions{grid-template-columns:auto 276px 128px!important}.crm-date-inline{width:276px!important}.crm-preset-menu{width:128px!important}}
 
+/* CAMPAIGN CONTROLS V1 */
+.crm-actions{grid-template-columns:auto minmax(420px,520px)!important;grid-template-areas:"add campaign"!important}
+.crm-campaign-controls{grid-area:campaign!important;display:grid!important;grid-template-columns:minmax(170px,.8fr) minmax(230px,1fr)!important;gap:10px!important;align-items:end!important;min-width:0!important}
+.crm-campaign-field{display:grid!important;gap:5px!important;min-width:0!important}
+.crm-campaign-field span{color:var(--slate)!important;font-size:.64rem!important;font-weight:800!important;letter-spacing:.04em!important;text-transform:uppercase!important}
+.crm-campaign-field select{width:100%!important;height:42px!important;padding:0 34px 0 12px!important;border:1px solid rgba(142,156,178,.55)!important;border-radius:8px!important;background:rgba(255,255,255,.68)!important;color:var(--ink)!important;font-family:var(--font-body)!important;font-size:.78rem!important;font-weight:700!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.72),0 8px 24px rgba(55,79,125,.08)!important;backdrop-filter:blur(16px)!important}
+.crm-campaign-field select:focus{outline:2px solid rgba(82,109,255,.25)!important;border-color:#8899e8!important}
+.crm-campaign-note{grid-column:1/-1!important;margin-top:-2px!important;color:var(--slate)!important;font-size:.68rem!important;font-weight:700!important;text-align:right!important}
+.crm-date-cell{white-space:nowrap!important}
+.crm-campaign-badge{display:inline-flex;margin-top:5px;padding:3px 7px;border:1px solid rgba(96,116,184,.22);border-radius:999px;background:rgba(234,239,255,.82);color:#4b5ba8;font-size:.56rem;font-weight:800;line-height:1.1}
+[data-theme="dark"] .crm-campaign-field select{background:rgba(27,33,58,.72)!important;border-color:rgba(175,187,214,.2)!important;color:#f5f7fb!important}
+[data-theme="dark"] .crm-campaign-note{color:rgba(230,236,255,.72)!important}
+[data-theme="dark"] .crm-campaign-badge{background:rgba(105,119,221,.2);border-color:rgba(177,187,255,.24);color:#d8ddff}
+@media(max-width:1050px){.crm-actions{grid-template-columns:auto minmax(360px,1fr)!important}.crm-campaign-controls{grid-template-columns:minmax(150px,.8fr) minmax(210px,1fr)!important}}
+@media(max-width:820px){.crm-actions{width:100%!important;grid-template-columns:1fr!important;grid-template-areas:"add" "campaign"!important}.crm-add-lead{justify-self:end!important}.crm-campaign-controls{grid-template-columns:1fr 1fr!important;width:100%!important}}
+@media(max-width:560px){.crm-add-lead{justify-self:stretch!important}.crm-campaign-controls{grid-template-columns:1fr!important}.crm-campaign-note{text-align:left!important}}
+
+/* VISIT PIPELINE OVERVIEW */
+.crm-visit-workspace{display:grid;grid-template-columns:minmax(220px,.7fr) minmax(420px,1.3fr);gap:16px;align-items:stretch;padding:16px;border:1px solid rgba(172,184,210,.42);border-radius:14px;background:linear-gradient(135deg,rgba(255,255,255,.72),rgba(238,243,255,.56));box-shadow:0 18px 42px rgba(56,76,122,.1);backdrop-filter:blur(18px)}
+.crm-visit-copy{display:grid;align-content:center;gap:4px;min-width:0}
+.crm-visit-copy h2{margin:0;font-size:1.18rem;line-height:1.15}
+.crm-visit-copy p{margin:4px 0 0;color:var(--slate);font-size:.78rem;line-height:1.5}
+.crm-visit-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.crm-visit-tab{display:grid;grid-template-rows:auto auto 1fr;gap:4px;min-height:98px;padding:13px;border:1px solid rgba(151,164,196,.34);border-radius:10px;background:rgba(255,255,255,.62);color:var(--ink);text-decoration:none;box-shadow:inset 0 1px 0 rgba(255,255,255,.8);transition:.18s ease}
+.crm-visit-tab:hover{transform:translateY(-2px);border-color:rgba(91,111,208,.34);box-shadow:0 10px 24px rgba(67,83,130,.12)}
+.crm-visit-tab.active{border-color:rgba(67,83,198,.52);background:linear-gradient(180deg,rgba(238,241,255,.92),rgba(255,255,255,.68));box-shadow:0 12px 28px rgba(77,91,181,.16)}
+.crm-visit-tab span{font-size:.68rem;font-weight:850;line-height:1.25}
+.crm-visit-tab strong{font:850 1.45rem var(--font-mono);line-height:1;color:#4d5bb7}
+.crm-visit-tab small{color:var(--slate);font-size:.62rem;line-height:1.25}
+[data-theme="dark"] .crm-visit-workspace{background:linear-gradient(135deg,rgba(27,35,62,.72),rgba(39,45,78,.52));border-color:rgba(148,164,205,.22);box-shadow:var(--shadow-card)}
+[data-theme="dark"] .crm-visit-tab{background:rgba(18,26,48,.62);border-color:rgba(148,164,205,.2);color:var(--ink)}
+[data-theme="dark"] .crm-visit-tab.active{background:rgba(96,108,210,.18);border-color:rgba(177,187,255,.34)}
+[data-theme="dark"] .crm-visit-tab strong{color:#d8ddff}
+@media(max-width:1180px){.crm-visit-workspace{grid-template-columns:1fr}.crm-visit-tabs{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:560px){.crm-visit-tabs{grid-template-columns:1fr}.crm-visit-workspace{padding:13px}}
+
 
 /* ============================================================
    FINAL TABLE INTERACTION UPDATE — parent response, timeline,
    quality insight, reminder timing, and next-action popups.
    ============================================================ */
-.crm-expanded-v4{grid-template-columns:1fr 1fr 1.05fr 1.1fr!important}.crm-parent-filter-section{border-left:1px solid var(--line);padding-left:20px}.crm-active-tag.parent{border-color:#d6c8ee;background:#f6f1ff;color:#6944a0}.crm-table-v12{width:100%!important;min-width:1500px!important;table-layout:fixed}.crm-table-v12 th,.crm-table-v12 td{padding:12px 10px!important}.crm-table-v12 th:nth-child(1){width:7.5%}.crm-table-v12 th:nth-child(2){width:10.5%}.crm-table-v12 th:nth-child(3){width:12%}.crm-table-v12 th:nth-child(4){width:6%}.crm-table-v12 th:nth-child(5){width:10%}.crm-table-v12 th:nth-child(6){width:11%}.crm-table-v12 th:nth-child(7){width:11%}.crm-table-v12 th:nth-child(8){width:10%}.crm-table-v12 th:nth-child(9){width:6.5%}.crm-table-v12 th:nth-child(10){width:9%}.crm-table-v12 th:nth-child(11){width:4%}.crm-table-v12 th:nth-child(12){width:4%}.crm-row-v12 td{background:#fff!important;box-shadow:none!important;border-bottom:1px solid #e7e0d2}.crm-person-v12{position:relative}.crm-parent-state{display:inline-flex;margin-top:6px;padding:3px 7px;border-radius:5px;font-size:.61rem;font-weight:750;line-height:1.1}.crm-parent-state.interested{background:#e8f7ed;color:#197142;border:1px solid #c8e8d2}.crm-parent-state.considering{background:#fff4dd;color:#9b6500;border:1px solid #efd49f}.crm-parent-state.no-response{background:#eef1f4;color:#66717d;border:1px solid #d8dde2}.crm-parent-state.not-interested{background:#fff0ee;color:#b63a31;border:1px solid #efc8c3}.crm-status-hover,.crm-followup-open{position:relative;display:inline-grid;gap:4px;max-width:100%}.crm-status-hover>small{display:block;color:var(--slate);font-size:.61rem;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.crm-cell-popover{visibility:hidden;opacity:0;position:absolute;z-index:80;left:0;bottom:calc(100% + 8px);width:260px;padding:12px;border:1px solid #d8dde4;border-radius:9px;background:#fff;box-shadow:0 12px 30px rgba(17,34,62,.16);color:var(--ink);font-style:normal;text-align:left;transition:.16s;pointer-events:none}.crm-cell-popover b,.crm-cell-popover span,.crm-cell-popover p{display:block}.crm-cell-popover span{margin-top:4px;color:var(--slate);font-size:.65rem}.crm-cell-popover p{margin:8px 0 0;font-size:.72rem;line-height:1.45}.crm-status-hover:hover .crm-cell-popover,.crm-followup-open:hover .crm-cell-popover{visibility:visible;opacity:1}.crm-followup-open,.crm-quality-badge,.crm-next-open{padding:0;border:0;background:transparent;text-align:left;cursor:pointer;font-family:inherit;color:inherit}.crm-followup-open strong,.crm-followup-open small,.crm-followup-open>span{display:block}.crm-followup-open strong{font-size:.73rem}.crm-followup-open small{margin-top:2px;color:var(--ink-soft);font-size:.64rem}.crm-followup-open>span{margin-top:4px;color:#2d67ad;font-size:.61rem;font-weight:700}.crm-quality-badge{width:100%;min-width:118px}.crm-quality-badge:hover{transform:translateY(-1px);box-shadow:0 5px 13px rgba(27,42,74,.08)}.crm-remitem-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}.crm-remitem-head>span{flex:0 0 auto;padding:4px 7px;border-radius:999px;background:#eef1f4;color:#5d6875;font-size:.62rem;font-weight:700}.crm-remitem.overdue .crm-remitem-head>span,.crm-remitem.within-24 .crm-remitem-head>span{background:#ffe7e5;color:#b72c27}.crm-next-open strong,.crm-next-open small,.crm-next-open span{display:block}.crm-next-open strong{font-size:.72rem}.crm-next-open small{margin-top:2px;font-size:.64rem}.crm-next-open span{margin-top:4px;font-size:.6rem;font-weight:700}.crm-next-open.upcoming strong,.crm-next-open.upcoming small{color:#187a45}.crm-next-open.upcoming span{color:#278752}.crm-next-open.overdue strong,.crm-next-open.overdue small,.crm-next-open.overdue span{color:#c42828}.crm-dialog-wide{width:min(820px,calc(100vw - 32px))}.crm-timeline-modal-list{display:grid;gap:0;margin-top:18px;padding-left:20px;border-left:2px solid #d9c89f}.crm-timeline-modal-item{position:relative;display:grid;grid-template-columns:34px minmax(0,1fr);gap:12px;margin-left:-38px;padding:0 0 18px}.crm-timeline-number{display:flex;align-items:center;justify-content:center;width:32px;height:32px;border:3px solid #fff;border-radius:50%;background:var(--brass);color:#fff;font:700 .68rem var(--font-mono);box-shadow:0 0 0 1px #d9c89f}.crm-timeline-modal-item>div{padding:13px;border:1px solid var(--line);border-radius:10px;background:#fff}.crm-timeline-top{display:flex;justify-content:space-between;gap:12px}.crm-timeline-top strong{font-size:.82rem}.crm-timeline-top span{color:#2d67ad;font-size:.65rem;font-weight:700}.crm-timeline-meta{margin-top:5px;color:var(--slate);font-size:.66rem}.crm-timeline-modal-item p{margin:8px 0 0;font-size:.75rem;line-height:1.5}.crm-quality-insight{margin-top:18px;padding:20px;border:1px solid var(--line);border-radius:12px;background:#fff}.crm-quality-score-large{display:flex;align-items:baseline;gap:10px;margin-bottom:12px}.crm-quality-score-large strong{font:800 2rem var(--font-mono);color:var(--ink)}.crm-quality-score-large span{font-size:.9rem;font-weight:750}.crm-quality-insight p{margin:0;color:var(--ink-soft);font-size:.82rem;line-height:1.65}.crm-next-action-card{margin-top:18px;padding:18px;border:1px solid var(--line);border-radius:12px;background:#fff}.crm-next-action-card strong,.crm-next-action-card span{display:block}.crm-next-action-card strong{font-size:1rem}.crm-next-action-card span{margin-top:5px;color:#c42828;font-size:.72rem;font-weight:700}.crm-next-action-card p{margin:13px 0 0;color:var(--slate);font-size:.8rem;line-height:1.55}
+.crm-expanded-v4{grid-template-columns:1fr 1fr 1.05fr 1.1fr!important}.crm-parent-filter-section{border-left:1px solid var(--line);padding-left:20px}.crm-active-tag.parent{border-color:#d6c8ee;background:#f6f1ff;color:#6944a0}.crm-table-v12{width:100%!important;min-width:1380px!important;table-layout:fixed}.crm-table-v12 th,.crm-table-v12 td{padding:12px 10px!important}.crm-table-v12 th:nth-child(1){width:8%}.crm-table-v12 th:nth-child(2){width:12%}.crm-table-v12 th:nth-child(3){width:14%}.crm-table-v12 th:nth-child(4){width:6%}.crm-table-v12 th:nth-child(5){width:11%}.crm-table-v12 th:nth-child(6){width:13%}.crm-table-v12 th:nth-child(7){width:12%}.crm-table-v12 th:nth-child(8){width:7%}.crm-table-v12 th:nth-child(9){width:11%}.crm-table-v12 th:nth-child(10){width:3.5%}.crm-table-v12 th:nth-child(11){width:3.5%}.crm-row-v12 td{background:#fff!important;box-shadow:none!important;border-bottom:1px solid #e7e0d2}.crm-person-v12{position:relative}.crm-parent-state{display:inline-flex;margin-top:6px;padding:3px 7px;border-radius:5px;font-size:.61rem;font-weight:750;line-height:1.1}.crm-parent-state.interested{background:#e8f7ed;color:#197142;border:1px solid #c8e8d2}.crm-parent-state.considering{background:#fff4dd;color:#9b6500;border:1px solid #efd49f}.crm-parent-state.no-response{background:#eef1f4;color:#66717d;border:1px solid #d8dde2}.crm-parent-state.not-interested{background:#fff0ee;color:#b63a31;border:1px solid #efc8c3}.crm-status-hover,.crm-followup-open{position:relative;display:inline-grid;gap:4px;max-width:100%}.crm-status-hover>small{display:block;color:var(--slate);font-size:.61rem;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.crm-cell-popover{visibility:hidden;opacity:0;position:absolute;z-index:80;left:0;bottom:calc(100% + 8px);width:260px;padding:12px;border:1px solid #d8dde4;border-radius:9px;background:#fff;box-shadow:0 12px 30px rgba(17,34,62,.16);color:var(--ink);font-style:normal;text-align:left;transition:.16s;pointer-events:none}.crm-cell-popover b,.crm-cell-popover span,.crm-cell-popover p{display:block}.crm-cell-popover span{margin-top:4px;color:var(--slate);font-size:.65rem}.crm-cell-popover p{margin:8px 0 0;font-size:.72rem;line-height:1.45}.crm-status-hover:hover .crm-cell-popover,.crm-followup-open:hover .crm-cell-popover{visibility:visible;opacity:1}.crm-followup-open,.crm-quality-badge,.crm-next-open{padding:0;border:0;background:transparent;text-align:left;cursor:pointer;font-family:inherit;color:inherit}.crm-followup-open strong,.crm-followup-open small,.crm-followup-open>span{display:block}.crm-followup-open strong{font-size:.73rem}.crm-followup-open small{margin-top:2px;color:var(--ink-soft);font-size:.64rem}.crm-followup-open>span{margin-top:4px;color:#2d67ad;font-size:.61rem;font-weight:700}.crm-quality-badge{width:100%;min-width:118px}.crm-quality-badge:hover{transform:translateY(-1px);box-shadow:0 5px 13px rgba(27,42,74,.08)}.crm-remitem-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}.crm-remitem-head>span{flex:0 0 auto;padding:4px 7px;border-radius:999px;background:#eef1f4;color:#5d6875;font-size:.62rem;font-weight:700}.crm-remitem.overdue .crm-remitem-head>span,.crm-remitem.within-24 .crm-remitem-head>span{background:#ffe7e5;color:#b72c27}.crm-next-open strong,.crm-next-open small,.crm-next-open span{display:block}.crm-next-open strong{font-size:.72rem}.crm-next-open small{margin-top:2px;font-size:.64rem}.crm-next-open span{margin-top:4px;font-size:.6rem;font-weight:700}.crm-next-open.upcoming strong,.crm-next-open.upcoming small{color:#187a45}.crm-next-open.upcoming span{color:#278752}.crm-next-open.overdue strong,.crm-next-open.overdue small,.crm-next-open.overdue span{color:#c42828}.crm-dialog-wide{width:min(820px,calc(100vw - 32px))}.crm-timeline-modal-list{display:grid;gap:0;margin-top:18px;padding-left:20px;border-left:2px solid #d9c89f}.crm-timeline-modal-item{position:relative;display:grid;grid-template-columns:34px minmax(0,1fr);gap:12px;margin-left:-38px;padding:0 0 18px}.crm-timeline-number{display:flex;align-items:center;justify-content:center;width:32px;height:32px;border:3px solid #fff;border-radius:50%;background:var(--brass);color:#fff;font:700 .68rem var(--font-mono);box-shadow:0 0 0 1px #d9c89f}.crm-timeline-modal-item>div{padding:13px;border:1px solid var(--line);border-radius:10px;background:#fff}.crm-timeline-top{display:flex;justify-content:space-between;gap:12px}.crm-timeline-top strong{font-size:.82rem}.crm-timeline-top span{color:#2d67ad;font-size:.65rem;font-weight:700}.crm-timeline-meta{margin-top:5px;color:var(--slate);font-size:.66rem}.crm-timeline-modal-item p{margin:8px 0 0;font-size:.75rem;line-height:1.5}.crm-quality-insight{margin-top:18px;padding:20px;border:1px solid var(--line);border-radius:12px;background:#fff}.crm-quality-score-large{display:flex;align-items:baseline;gap:10px;margin-bottom:12px}.crm-quality-score-large strong{font:800 2rem var(--font-mono);color:var(--ink)}.crm-quality-score-large span{font-size:.9rem;font-weight:750}.crm-quality-insight p{margin:0;color:var(--ink-soft);font-size:.82rem;line-height:1.65}.crm-next-action-card{margin-top:18px;padding:18px;border:1px solid var(--line);border-radius:12px;background:#fff}.crm-next-action-card strong,.crm-next-action-card span{display:block}.crm-next-action-card strong{font-size:1rem}.crm-next-action-card span{margin-top:5px;color:#c42828;font-size:.72rem;font-weight:700}.crm-next-action-card p{margin:13px 0 0;color:var(--slate);font-size:.8rem;line-height:1.55}
 @media(max-width:1400px){.crm-expanded-v4{grid-template-columns:1fr 1fr!important}.crm-parent-filter-section{border-left:1px solid var(--line)}.crm-saved-panel{grid-column:1/-1!important;border-left:0!important;border-top:1px solid var(--line);padding-top:16px!important}}
 @media(max-width:760px){.crm-expanded-v4{grid-template-columns:1fr!important}.crm-parent-filter-section{border-left:0;border-top:1px solid var(--line);padding:14px 0}.crm-modalfoot{flex-wrap:wrap}.crm-modalfoot .btn{flex:1 1 140px}}
 
@@ -573,6 +884,27 @@ require __DIR__ . '/includes/layout_top.php';
 .crm-quality-dialog{width:min(720px,calc(100vw - 32px))}.crm-quality-dialog.tone-hot{--quality-accent:#18864a;--quality-soft:#eaf8ef}.crm-quality-dialog.tone-strong{--quality-accent:#2877b8;--quality-soft:#edf6ff}.crm-quality-dialog.tone-potential{--quality-accent:#c78000;--quality-soft:#fff6e4}.crm-quality-dialog.tone-low{--quality-accent:#d6672c;--quality-soft:#fff1e9}.crm-quality-dialog.tone-unqualified{--quality-accent:#c43b36;--quality-soft:#fff0ef}.crm-quality-insight{border-top:5px solid var(--quality-accent)!important;background:linear-gradient(180deg,var(--quality-soft),#fff 170px)!important}.crm-quality-score-large{padding:4px 0 12px;border-bottom:1px solid rgba(27,42,74,.1)}.crm-quality-score-large strong,.crm-quality-score-large span{color:var(--quality-accent)!important}.crm-insight-section{margin-top:14px;padding:14px 15px;border:1px solid #e1e5ea;border-radius:10px;background:#fff}.crm-insight-section h3{margin:0 0 7px;font-family:var(--font-body);font-size:.78rem}.crm-insight-section p{margin:0!important;font-size:.78rem!important;line-height:1.62!important}.crm-insight-section small{display:block;margin-top:8px;color:var(--slate);font-size:.68rem}.crm-insight-recommendation{border-left:4px solid #2d72c7;background:#f2f7ff}.crm-insight-recommendation h3{color:#1f5da8}.crm-insight-watchout{border-left:4px solid #da5d4a;background:#fff5f2}.crm-insight-watchout h3{color:#b43d30}.crm-insight-encouragement{margin-top:14px;padding:15px;border-radius:10px;background:var(--quality-soft);color:var(--ink)}.crm-insight-encouragement strong{display:block;color:var(--quality-accent);font-size:.8rem}.crm-insight-encouragement p{margin:6px 0 0!important;font-size:.76rem!important;line-height:1.55!important}
 .crm-practical-note{display:grid;gap:6px;margin-top:14px;padding:12px 13px;border-left:4px solid #2d72c7;border-radius:8px;background:#f2f7ff}.crm-practical-note b{color:#1f5da8;font-size:.76rem}.crm-practical-note span{margin:0!important;color:var(--ink-soft)!important;font-size:.73rem!important;line-height:1.5}.crm-modalfoot .btn-brass{background:var(--brass);color:#fff}
 @media(max-width:760px){.crm-quality-dialog{width:calc(100vw - 20px)}.crm-status-meta-box{min-width:145px}}
+
+/* FINAL CAMPAIGN FILTER POSITIONING */
+.crm-head .crm-actions{display:grid!important;grid-template-columns:auto minmax(420px,520px)!important;grid-template-areas:"add campaign"!important;justify-content:end!important;align-items:center!important;min-width:0!important}
+.crm-head .crm-campaign-controls{grid-area:campaign!important}
+.crm-head .crm-add-lead{grid-area:add!important;align-self:start!important;margin-top:21px!important;height:42px!important}
+@media(min-width:1281px){.crm-head .crm-actions{grid-template-columns:auto minmax(440px,540px)!important;grid-template-areas:"add campaign"!important;min-width:0!important}.crm-head .crm-actions .btn-primary{grid-area:add!important;align-self:start!important;margin-top:21px!important}.crm-head .crm-campaign-controls{grid-area:campaign!important}}
+@media(max-width:820px){.crm-head .crm-actions{width:100%!important;grid-template-columns:1fr!important;grid-template-areas:"add" "campaign"!important}.crm-head .crm-add-lead{justify-self:end!important;margin-top:0!important}.crm-head .crm-campaign-controls{grid-template-columns:1fr 1fr!important}}
+@media(max-width:560px){.crm-head .crm-add-lead{justify-self:stretch!important}.crm-head .crm-campaign-controls{grid-template-columns:1fr!important}}
+
+/* FINAL FILTER SIMPLIFICATION */
+.crm-filter-top-v4{grid-template-columns:minmax(260px,1fr) auto!important}
+.crm-top-filter-actions{justify-content:flex-end!important}
+.crm-expanded-v4.open{grid-template-columns:1fr .85fr 1fr 1.05fr!important}
+.crm-expanded-v4>.crm-section{border-left:1px solid var(--line);padding:0 18px!important}
+.crm-expanded-v4>.crm-section:first-child{border-left:0!important;padding-left:0!important}
+.crm-quality-checks{grid-template-columns:1fr!important;gap:8px!important}
+.crm-quality-check span{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;width:100%}
+.crm-quality-check b{font-size:.72rem;line-height:1.2}
+.crm-quality-check small{color:var(--slate);font-size:.62rem;font-weight:700}
+@media(max-width:1180px){.crm-filter-top-v4{grid-template-columns:1fr!important}.crm-top-filter-actions{justify-content:flex-start!important}.crm-expanded-v4.open{grid-template-columns:1fr 1fr!important}.crm-expanded-v4>.crm-section{border-left:0!important;padding:14px 0!important;border-top:1px solid var(--line)}.crm-expanded-v4>.crm-section:first-child{border-top:0!important;padding-top:0!important}}
+@media(max-width:720px){.crm-expanded-v4.open{grid-template-columns:1fr!important}.crm-quality-check span{grid-template-columns:1fr}}
 </style>
 
 <div class="crm-leads">
@@ -580,50 +912,52 @@ require __DIR__ . '/includes/layout_top.php';
     <div><div class="eyebrow">Full register</div><h1>All leads</h1><p>Manage and track all admission leads in one place.</p></div>
     <div class="crm-actions">
       <?php if (is_admin()): ?><a href="lead_form.php" class="btn btn-primary crm-add-lead">+ Add lead</a><?php endif; ?>
-      <div class="crm-date-inline" aria-label="Lead date range">
-        <div class="crm-date-input-wrap">
-          <input type="date" id="topStart" value="<?= e($startDate) ?>" aria-label="Start date">
-        </div>
-        <span class="crm-date-separator" aria-hidden="true">–</span>
-        <div class="crm-date-input-wrap">
-          <input type="date" id="topEnd" value="<?= e($endDate) ?>" aria-label="End date">
-        </div>
-      </div>
-      <div class="crm-preset-menu" id="crmPresetMenu">
-        <?php
-          $rangeDays = 0;
-          try {
-              $rangeStartObj = new DateTime($startDate);
-              $rangeEndObj = new DateTime($endDate);
-              if ($rangeEndObj >= $rangeStartObj) {
-                  $rangeDays = (int)$rangeStartObj->diff($rangeEndObj)->days + 1;
-              }
-          } catch (Throwable $e) {
-              $rangeDays = 0;
-          }
-          $rangeLabel = $rangeDays > 0 ? $rangeDays . ' days' : 'Select period';
-        ?>
-        <button type="button" class="crm-preset-trigger" id="presetTrigger" aria-expanded="false">
-          <span id="presetText"><?= e($rangeLabel) ?></span>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 9 5 5 5-5H7Z"/></svg>
-        </button>
-        <div class="crm-preset-options" id="presetOptions" hidden>
-          <button type="button" data-preset="7">Last 7 days</button>
-          <button type="button" data-preset="30" class="is-active">Last 30 days</button>
-          <button type="button" data-preset="90">Last 90 days</button>
-          <button type="button" data-preset="month">This month</button>
-        </div>
+      <div class="crm-campaign-controls" aria-label="Campaign filters">
+        <label class="crm-campaign-field">
+          <span>Month</span>
+          <select id="topCampaignMonth" aria-label="Campaign month">
+            <?php foreach ($monthOptions as $value => $label): ?>
+              <option value="<?= e($value) ?>" <?= $selectedMonth === $value ? 'selected' : '' ?>><?= e($label) ?></option>
+            <?php endforeach; ?>
+          </select>
+        </label>
+        <label class="crm-campaign-field">
+          <span>Campaign</span>
+          <select id="topCampaign" aria-label="Ad campaign">
+            <option value="all" <?= $selectedCampaign === 'all' ? 'selected' : '' ?>>All campaigns</option>
+            <?php foreach ($campaignWindows as $window): ?>
+              <option value="<?= e($window['key']) ?>" <?= $selectedCampaign === $window['key'] ? 'selected' : '' ?>>
+                <?= e($window['label'] . ' (' . $window['display'] . ')') ?>
+              </option>
+            <?php endforeach; ?>
+          </select>
+        </label>
+        <div class="crm-campaign-note"><?= e($campaignRangeLabel) ?> · <?= e(fmt_date($startDate)) ?> to <?= e(fmt_date($endDate)) ?></div>
       </div>
     </div>
   </header>
 
-  <section class="card crm-stats">
-    <?php foreach ([['','◉','Total inquiries',$total],['good','↗','Ongoing positive',$ongoing],['visit','▣','Visit scheduled',$scheduled],['done','◯','Visited',$visited],['bad','!','Missed follow-ups',$missed]] as [$c,$i,$l,$v]): ?>
-      <div class="crm-stat <?= e($c) ?>"><span class="crm-stat-icon"><?= e($i) ?></span><div><span class="crm-stat-label"><?= e($l) ?></span><strong class="crm-stat-value"><?= (int)$v ?></strong><span class="crm-stat-cap"><?= $total ? round($v/$total*100,2) : 0 ?>% of total leads</span></div></div>
-    <?php endforeach; ?>
+  <section class="crm-visit-workspace" aria-label="Visit pipeline overview">
+    <div class="crm-visit-copy">
+      <div class="eyebrow">Visit view</div>
+      <h2><?= e($selectedVisitView !== '' ? $visitViewMeta[$selectedVisitView]['label'] : 'Visit Pipeline') ?></h2>
+      <p><?= e($selectedVisitView !== '' ? $visitViewMeta[$selectedVisitView]['description'] : 'Use these views to understand who needs a visit date, who is expected at school, who already visited, and who missed an appointment.') ?></p>
+    </div>
+    <div class="crm-visit-tabs">
+      <?php foreach ($visitViewMeta as $key => $meta): ?>
+        <a href="<?= e(leads_page_url(['visit_view'=>$key,'page'=>1])) ?>" class="crm-visit-tab <?= $selectedVisitView === $key ? 'active' : '' ?>">
+          <span><?= e($meta['label']) ?></span>
+          <strong><?= (int)($visitViewCounts[$key] ?? 0) ?></strong>
+          <small><?= e($meta['short']) ?></small>
+        </a>
+      <?php endforeach; ?>
+    </div>
   </section>
 
   <form method="get" id="crmForm" class="card crm-filter">
+    <input type="hidden" name="campaign_month" id="campaign_month" value="<?= e($selectedMonth) ?>">
+    <input type="hidden" name="campaign" id="campaign" value="<?= e($selectedCampaign) ?>">
+    <input type="hidden" name="visit_view" id="visit_view" value="<?= e($selectedVisitView) ?>">
     <input type="hidden" name="start_date" id="start_date" value="<?= e($startDate) ?>">
     <input type="hidden" name="end_date" id="end_date" value="<?= e($endDate) ?>">
     <input type="hidden" name="page" id="pageInput" value="<?= (int)$page ?>">
@@ -634,23 +968,6 @@ require __DIR__ . '/includes/layout_top.php';
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 20.3-4.7-4.7a7.7 7.7 0 1 0-.7.7l4.7 4.7.7-.7ZM4.8 10.5a5.7 5.7 0 1 1 11.4 0 5.7 5.7 0 0 1-11.4 0Z"/></svg>
           <input id="q" name="q" value="<?= e($q) ?>" placeholder="Search name, parent, contact..." autocomplete="off">
           <?php if ($q !== ''): ?><button type="button" class="crm-search-clear" id="clearSearch" aria-label="Clear search">×</button><?php endif; ?>
-        </div>
-      </div>
-
-      <div class="field crm-quality-field">
-        <div class="crm-quality-pills" role="group" aria-label="Lead quality filters">
-          <?php foreach ([
-            'hot'=>['Hot Lead','80–100%','hot'],
-            'strong'=>['Strong','65–79%','strong'],
-            'potential'=>['Potential','45–64%','potential'],
-            'low_engagement'=>['Low Engagement','25–44%','low'],
-            'unqualified'=>['Unqualified','0–24%','unqualified'],
-          ] as $key=>$meta): ?>
-            <label class="crm-quality-pill <?= e($meta[2]) ?>">
-              <input type="checkbox" name="quality[]" value="<?= e($key) ?>" <?= in_array($key,$selectedQualities,true)?'checked':'' ?>>
-              <span><b><?= e($meta[0]) ?></b><small><?= e($meta[1]) ?></small></span>
-            </label>
-          <?php endforeach; ?>
         </div>
       </div>
 
@@ -672,15 +989,16 @@ require __DIR__ . '/includes/layout_top.php';
         'low_engagement'=>'Low Engagement','unqualified'=>'Unqualified Lead',
         'high'=>'High Quality','moderate'=>'Moderate Quality','low'=>'Low Quality'
       ];
-      $hasActiveFilters = $q !== '' || $selectedStatuses || $selectedGrades || $selectedQualities || $selectedParentResponses;
+      $hasActiveFilters = $selectedVisitView !== '' || $q !== '' || $selectedStatuses || $selectedGrades || $selectedQualities || $selectedParentResponses;
     ?>
     <div class="crm-active-filters <?= $hasActiveFilters ? 'has-filters' : '' ?>" id="activeFilters">
       <span class="crm-active-label">Active filters</span>
       <div class="crm-active-tags">
         <?php if ($q !== ''): ?><button type="button" class="crm-active-tag search" data-filter-name="q" data-filter-value=""><span>Search: <?= e($q) ?></span><b>×</b></button><?php endif; ?>
+        <?php if ($selectedVisitView !== ''): ?><button type="button" class="crm-active-tag status" data-filter-name="visit_view" data-filter-value=""><span>View: <?= e($visitViewMeta[$selectedVisitView]['label']) ?></span><b>×</b></button><?php endif; ?>
         <?php foreach ($selectedStatuses as $value): ?><button type="button" class="crm-active-tag status" data-filter-name="status[]" data-filter-value="<?= e($value) ?>"><span>Status: <?= e(leads_workflow_label($value)) ?></span><b>×</b></button><?php endforeach; ?>
         <?php foreach ($selectedParentResponses as $value): ?><button type="button" class="crm-active-tag parent" data-filter-name="parent_response[]" data-filter-value="<?= e($value) ?>"><span>Parent: <?= e(leads_parent_response_label_short($value)) ?></span><b>×</b></button><?php endforeach; ?>
-        <?php foreach ($selectedGrades as $value): ?><button type="button" class="crm-active-tag grade" data-filter-name="grade[]" data-filter-value="<?= e($value) ?>"><span>Grade: <?= e($value) ?></span><b>×</b></button><?php endforeach; ?>
+        <?php foreach ($selectedGrades as $value): ?><button type="button" class="crm-active-tag grade" data-filter-name="grade[]" data-filter-value="<?= e($value) ?>"><span>Grade: <?= e(leads_grade_filter_label($value)) ?></span><b>×</b></button><?php endforeach; ?>
         <?php foreach ($selectedQualities as $value): ?><button type="button" class="crm-active-tag quality" data-filter-name="quality[]" data-filter-value="<?= e($value) ?>"><span>Quality: <?= e($qualityNames[$value] ?? ucwords(str_replace('_',' ',$value))) ?></span><b>×</b></button><?php endforeach; ?>
         <?php if (!$hasActiveFilters): ?><span class="crm-no-active">No filters selected</span><?php endif; ?>
       </div>
@@ -690,17 +1008,34 @@ require __DIR__ . '/includes/layout_top.php';
     <div id="expanded" class="crm-expanded crm-expanded-v4">
       <section class="crm-section">
         <span class="crm-section-title">Admission status</span>
-        <div class="crm-checks"><?php foreach(['new','contacted','follow_up_required','visit_interested','visit_requested','visit_scheduled','visited','placement_test_scheduled','placement_test_completed','joined','closed'] as $v): ?><label class="crm-check"><input type="checkbox" name="status[]" value="<?= e($v) ?>" <?= in_array($v,$selectedStatuses,true)?'checked':'' ?>><span><?= e(leads_workflow_label($v)) ?></span></label><?php endforeach; ?></div>
+        <div class="crm-checks"><?php foreach($statusFilterOptions as $v=>$label): ?><label class="crm-check"><input type="checkbox" name="status[]" value="<?= e($v) ?>" <?= in_array($v,$selectedStatuses,true)?'checked':'' ?>><span><?= e($label) ?></span></label><?php endforeach; ?></div>
       </section>
       <section class="crm-section">
         <span class="crm-section-title">Grade</span>
-        <div class="crm-checks"><?php foreach($availableGrades as $v): ?><label class="crm-check"><input type="checkbox" name="grade[]" value="<?= e($v) ?>" <?= in_array($v,$selectedGrades,true)?'checked':'' ?>><span><?= e($v) ?></span></label><?php endforeach; ?></div>
+        <div class="crm-checks"><?php foreach($gradeFilterOptions as $v=>$label): ?><label class="crm-check"><input type="checkbox" name="grade[]" value="<?= e($v) ?>" <?= in_array($v,$selectedGrades,true)?'checked':'' ?>><span><?= e($label) ?></span></label><?php endforeach; ?></div>
+      </section>
+      <section class="crm-section crm-quality-filter-section">
+        <span class="crm-section-title">Lead quality</span>
+        <div class="crm-checks crm-quality-checks">
+          <?php foreach ([
+            'hot'=>['Hot Lead','80-100%'],
+            'strong'=>['Strong Lead','65-79%'],
+            'potential'=>['Potential Lead','45-64%'],
+            'low_engagement'=>['Low Engagement','25-44%'],
+            'unqualified'=>['Unqualified','0-24%'],
+          ] as $key=>$meta): ?>
+            <label class="crm-check crm-quality-check">
+              <input type="checkbox" name="quality[]" value="<?= e($key) ?>" <?= in_array($key,$selectedQualities,true)?'checked':'' ?>>
+              <span><b><?= e($meta[0]) ?></b><small><?= e($meta[1]) ?></small></span>
+            </label>
+          <?php endforeach; ?>
+        </div>
       </section>
       <section class="crm-section crm-parent-filter-section">
         <span class="crm-section-title">Parent response</span>
         <div class="crm-checks crm-parent-checks">
-          <?php foreach (['interested','still_considering','call_back_later','will_call_back','pending','no_response','not_reached','number_not_working','not_interested','wrong_lead','accidental_lead','job_inquiry','rejected'] as $v): ?>
-            <label class="crm-check"><input type="checkbox" name="parent_response[]" value="<?= e($v) ?>" <?= in_array($v,$selectedParentResponses,true)?'checked':'' ?>><span><?= e(leads_parent_response_label_short($v)) ?></span></label>
+          <?php foreach ($parentResponseFilterOptions as $v=>$label): ?>
+            <label class="crm-check"><input type="checkbox" name="parent_response[]" value="<?= e($v) ?>" <?= in_array($v,$selectedParentResponses,true)?'checked':'' ?>><span><?= e($label) ?></span></label>
           <?php endforeach; ?>
         </div>
       </section>
@@ -713,13 +1048,16 @@ require __DIR__ . '/includes/layout_top.php';
 
   <section class="card crm-table-card crm-table-card-v12">
     <?php if(!$visibleRows): ?>
-      <div class="empty-state"><h3>No leads match this view</h3><p>Try changing the date range or clearing the filters.</p></div>
+      <div class="empty-state">
+        <h3><?= e($selectedVisitView !== '' ? 'No ' . strtolower($visitViewMeta[$selectedVisitView]['label']) . ' found' : 'No leads match this view') ?></h3>
+        <p><?= e($selectedVisitView !== '' ? 'This section only shows leads that belong to ' . $visitViewMeta[$selectedVisitView]['label'] . ' for the selected campaign and month.' : 'Try changing the campaign, month, or clearing the filters.') ?></p>
+      </div>
     <?php else: ?>
     <div class="crm-scroll">
       <table class="crm-table crm-table-v12">
         <thead><tr>
           <th>Received</th><th>Child / Parent</th><th>Initial Inquiry</th><th>Grade</th><th>Contact Number</th>
-          <th>Lead Status</th><th>Last Follow-up</th><th>Lead Quality</th><th>Reminder</th><th>Next Follow-up</th><th class="num">Follow-ups</th><th>View</th>
+          <th>Lead Status</th><th>Lead Quality</th><th>Reminder</th><th>Next Follow-up</th><th class="num">Follow-ups</th><th>View</th>
         </tr></thead>
         <tbody>
         <?php foreach($visibleRows as $row):
@@ -731,6 +1069,7 @@ require __DIR__ . '/includes/layout_top.php';
           $latestSummary=$latest?leads_followup_summary($latest):'No follow-up recorded yet.';
           $parentResponse=$row['parent_response']; $parentTone=leads_parent_response_tone($parentResponse);
           $qualityInsight=leads_quality_insight($qualityScore,$row['workflow'],$parentResponse,$row['followups'],$row['inquiries']);
+          $leadCampaignLabel=leads_campaign_for_date($lead['received_date']??null,$campaignWindows);
           $payload=[];
           foreach($row['reminders'] as $r){
             if(($r['status']??'pending')!=='pending')continue;
@@ -771,13 +1110,12 @@ require __DIR__ . '/includes/layout_top.php';
           }
         ?>
           <tr class="crm-row crm-row-v12">
-            <td class="crm-date-cell"><?= e(fmt_date($lead['received_date']??null)) ?></td>
+            <td class="crm-date-cell"><?= e(fmt_date($lead['received_date']??null)) ?><?php if($leadCampaignLabel!==''):?><br><span class="crm-campaign-badge"><?= e($leadCampaignLabel) ?></span><?php endif;?></td>
             <td class="crm-person crm-person-v12"><strong><?= e($lead['child_name']?:'—') ?></strong><small><?= e($lead['parent_name']?:'Parent not added') ?></small><span class="crm-parent-state <?= e($parentTone) ?>"><?= e(leads_parent_response_label_short($parentResponse)) ?></span></td>
-            <td class="crm-inquiry crm-inquiry-v12"><?php if($inquiryTooltip):$firstInquiry=$inquiryTooltip[0];?><button type="button" class="crm-inquiry-hover"><strong><?= e($firstInquiry['title']) ?></strong><?php if($firstInquiry['detail']!==''):?><small><?= e(mb_strimwidth($firstInquiry['detail'],0,44,'…')) ?></small><?php endif;?><?php if(count($inquiryTooltip)>1):?><span class="crm-more-count">+<?= count($inquiryTooltip)-1 ?> more</span><?php endif;?><span class="crm-inquiry-popover" role="tooltip"><b>Initial inquiries</b><?php foreach($inquiryTooltip as $item):?><span class="crm-inquiry-popover-item"><strong><?= e($item['title']) ?></strong><?php if($item['detail']!==''):?><small><?= e($item['detail']) ?></small><?php endif;?></span><?php endforeach;?></span></button><?php else:?>—<?php endif;?></td>
+            <td class="crm-inquiry crm-inquiry-v12"><?php if($inquiryTooltip):$firstInquiry=$inquiryTooltip[0];?><button type="button" class="crm-inquiry-hover"><strong><?= e($firstInquiry['title']) ?></strong><?php if($firstInquiry['detail']!==''):?><small><?= e(leads_trim_text($firstInquiry['detail'],44,'...')) ?></small><?php endif;?><?php if(count($inquiryTooltip)>1):?><span class="crm-more-count">+<?= count($inquiryTooltip)-1 ?> more</span><?php endif;?><span class="crm-inquiry-popover" role="tooltip"><b>Initial inquiries</b><?php foreach($inquiryTooltip as $item):?><span class="crm-inquiry-popover-item"><strong><?= e($item['title']) ?></strong><?php if($item['detail']!==''):?><small><?= e($item['detail']) ?></small><?php endif;?></span><?php endforeach;?></span></button><?php else:?>—<?php endif;?></td>
             <td><?= e($lead['grade']?:'—') ?></td>
             <td class="crm-contact-cell"><?php if($contact!==''):?><a href="tel:<?= e(preg_replace('/[^0-9+]/','',$contact)) ?>" class="crm-contact-link"><svg viewBox="0 0 24 24"><path d="M6.6 10.8a15.5 15.5 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.24c1.08.36 2.24.55 3.42.55a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1C10.54 21 3 13.46 3 4.18a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.18.19 2.34.55 3.42a1 1 0 0 1-.25 1l-2.2 2.2Z"/></svg><span><?= e($contact) ?></span></a><?php else:?>—<?php endif;?></td>
-            <td class="crm-status-cell"><span class="crm-status-hover"><span class="tag <?= e(status_class($row['workflow'])) ?>"><?= e(leads_workflow_label($row['workflow'])) ?></span><?php if($latest):?><span class="crm-status-meta-box"><b><?= e(($statusMeta['date']??'') . (($statusMeta['time']??'')?' · '.$statusMeta['time']:'')) ?></b><?php if($statusScheduleDate!==''):?><small>Scheduled: <?= e($statusScheduleDate . ($statusScheduleTime!==''?' · '.$statusScheduleTime:'')) ?></small><?php endif;?><?php if($statusCreated!==''):?><small>Created: <?= e($statusCreated) ?></small><?php endif;?></span><span class="crm-cell-popover"><b>Latest status update</b><span><?= e(($statusMeta['date']??'') . (($statusMeta['time']??'')?' · '.$statusMeta['time']:'')) ?></span><?php if($statusScheduleDate!==''):?><span>Scheduled for <?= e($statusScheduleDate . ($statusScheduleTime!==''?' · '.$statusScheduleTime:'')) ?></span><?php endif;?><p><?= e($latestSummary) ?></p></span><?php endif;?></span></td>
-            <td class="crm-last-followup-cell"><?php if($latestDt):?><button type="button" class="crm-followup-open" onclick='openFollowupTimeline(<?= json_encode($lead['child_name']?:$lead['parent_name']?:'Lead',JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_AMP|JSON_HEX_QUOT) ?>,<?= (int)$lead['id'] ?>,<?= json_encode($timeline,JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_AMP|JSON_HEX_QUOT) ?>)'><strong><?= e(fmt_date($latest['followup_date']??null)) ?></strong><small><?= e(!empty($latest['followup_time'])?date('g:i A',strtotime($latest['followup_time'])):'') ?></small><span><?= e(leads_relative_time($latestDt)) ?></span><i class="crm-cell-popover"><b>Last follow-up summary</b><p><?= e($latestSummary) ?></p></i></button><?php else:?>—<?php endif;?></td>
+            <td class="crm-status-cell"><span class="crm-status-hover"><span class="tag <?= e(status_class($row['workflow'])) ?>"><?= e(leads_workflow_label($row['workflow'])) ?></span><?php if($latest):?><span class="crm-status-meta-box"><b><?= e(($statusMeta['date']??'') . (($statusMeta['time']??'')?' · '.$statusMeta['time']:'')) ?></b></span><span class="crm-cell-popover"><b>Latest status update</b><span><?= e(($statusMeta['date']??'') . (($statusMeta['time']??'')?' · '.$statusMeta['time']:'')) ?></span><?php if($statusCreated!==''):?><span>Created: <?= e($statusCreated) ?></span><?php endif;?><?php if($statusScheduleDate!==''):?><span>Scheduled for <?= e($statusScheduleDate . ($statusScheduleTime!==''?' · '.$statusScheduleTime:'')) ?></span><?php endif;?><p><?= e($latestSummary) ?></p></span><?php endif;?></span></td>
             <td class="crm-quality-cell"><button type="button" class="crm-quality-badge <?= e($qualityTone) ?>" onclick='openQualityModal(<?= json_encode($lead['child_name']?:$lead['parent_name']?:'Lead',JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_AMP|JSON_HEX_QUOT) ?>,<?= json_encode($row['quality_label'],JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_AMP|JSON_HEX_QUOT) ?>,<?= $qualityScore ?>,<?= json_encode($qualityInsight,JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_AMP|JSON_HEX_QUOT) ?>,<?= (int)$lead['id'] ?>)'><i></i><span><b><?= e($row['quality_label']) ?></b><small><?= $qualityScore ?>%</small></span></button></td>
             <td class="crm-rem crm-rem-v12"><?php if($state['count']>0):?><button type="button" class="crm-bell-v11 <?= e($reminderTone) ?>" onclick='openReminder(<?= json_encode($lead['child_name']?:$lead['parent_name']?:'Lead',JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_AMP|JSON_HEX_QUOT) ?>,<?= (int)$lead['id'] ?>,<?= json_encode($payload,JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_AMP|JSON_HEX_QUOT) ?>)'><svg viewBox="0 0 24 24"><path d="M12 22a2.5 2.5 0 0 0 2.35-1.65h-4.7A2.5 2.5 0 0 0 12 22Zm7-5.5-1.6-2V9a5.4 5.4 0 0 0-4.4-5.3V3a1 1 0 1 0-2 0v.7A5.4 5.4 0 0 0 6.6 9v5.5l-1.6 2V18h14v-1.5Z"/></svg><span class="crm-badge-v11"><?= (int)$state['count'] ?></span></button><?php if($next):?><span class="crm-remdate-v11 <?= e($reminderTone) ?>"><?= e(fmt_date($next['reminder_date']??null)) ?><?php if(!empty($next['reminder_time'])):?><small><?= e(date('g:i A',strtotime($next['reminder_time']))) ?></small><?php endif;?></span><?php endif;?><?php else:?><span class="crm-bell-empty">—</span><?php endif;?></td>
             <td class="crm-next crm-next-v12"><?php if($nf):?><button type="button" class="crm-next-open <?= $nfOver?'overdue':'upcoming' ?>" onclick='openNextFollowup(<?= json_encode($lead['child_name']?:$lead['parent_name']?:'Lead',JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_AMP|JSON_HEX_QUOT) ?>,<?= (int)$lead['id'] ?>,<?= (int)($latest['id']??0) ?>,<?= json_encode($nf->format('j M Y'),JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_AMP|JSON_HEX_QUOT) ?>,<?= json_encode($nf->format('H:i')==='00:00'?'10:00 AM':$nf->format('g:i A'),JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_AMP|JSON_HEX_QUOT) ?>,<?= json_encode(leads_relative_time($nf,true),JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_AMP|JSON_HEX_QUOT) ?>)'><strong><?= e($nf->format('j M Y')) ?></strong><small><?= e($nf->format('H:i')==='00:00'?'10:00 AM':$nf->format('g:i A')) ?></small><span><?= e(leads_relative_time($nf,true)) ?></span></button><?php else:?>—<?php endif;?></td>
@@ -823,12 +1161,11 @@ require __DIR__ . '/includes/layout_top.php';
 (function(){
   const form=document.getElementById('crmForm');
   const q=document.getElementById('q');
-  const ts=document.getElementById('topStart');
-  const te=document.getElementById('topEnd');
-  const presetMenu=document.getElementById('crmPresetMenu');
-  const presetTrigger=document.getElementById('presetTrigger');
-  const presetOptions=document.getElementById('presetOptions');
-  const presetText=document.getElementById('presetText');
+  const campaignMonthSelect=document.getElementById('topCampaignMonth');
+  const campaignSelect=document.getElementById('topCampaign');
+  const campaignMonthHidden=document.getElementById('campaign_month');
+  const campaignHidden=document.getElementById('campaign');
+  const visitView=document.getElementById('visit_view');
   const hs=document.getElementById('start_date');
   const he=document.getElementById('end_date');
   const more=document.getElementById('moreFilters');
@@ -844,11 +1181,6 @@ require __DIR__ . '/includes/layout_top.php';
 
   function submit(){page.value='1';form.requestSubmit();}
   function fmt(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
-  function setPresetOpen(open){
-    if(!presetOptions||!presetTrigger)return;
-    presetOptions.hidden=!open;
-    presetTrigger.setAttribute('aria-expanded',open?'true':'false');
-  }
   function parseLocalDate(value){
     if(!value)return null;
     const parts=value.split('-').map(Number);
@@ -860,23 +1192,17 @@ require __DIR__ . '/includes/layout_top.php';
     if(!start||!end||end<start)return 0;
     return Math.round((end-start)/86400000)+1;
   }
-  function updatePeriodLabel(activePreset='custom'){
-    const days=inclusiveDays(ts?.value||hs?.value,te?.value||he?.value);
-    if(presetText)presetText.textContent=days>0?days+' day'+(days===1?'':'s'):'Select period';
-    presetOptions?.querySelectorAll('[data-preset]').forEach(btn=>btn.classList.toggle('is-active',btn.dataset.preset===activePreset));
-  }
-  function markPreset(value){updatePeriodLabel(value);}
   function setExpanded(open){
     expanded.classList.toggle('open',open);
     more.classList.toggle('is-open',open);
     more.setAttribute('aria-expanded',open?'true':'false');
   }
   function checkedValues(name){return [...form.querySelectorAll('input[name="'+name+'"]:checked')].map(x=>x.value);}
-  function currentFilter(){return {q:q.value.trim(),qualities:checkedValues('quality[]'),statuses:checkedValues('status[]'),grades:checkedValues('grade[]'),parentResponses:checkedValues('parent_response[]')};}
+  function currentFilter(){return {q:q.value.trim(),campaignMonth:campaignMonthHidden?.value||'',campaign:campaignHidden?.value||'all',visitView:visitView?.value||'',qualities:checkedValues('quality[]'),statuses:checkedValues('status[]'),grades:checkedValues('grade[]'),parentResponses:checkedValues('parent_response[]')};}
   function readSaved(){try{return JSON.parse(localStorage.getItem(STORAGE_KEY)||'[]')}catch(e){return []}}
   function writeSaved(items){localStorage.setItem(STORAGE_KEY,JSON.stringify(items));renderSaved();}
   function setInputValues(name,values){form.querySelectorAll('input[name="'+name+'"]').forEach(x=>x.checked=values.includes(x.value));}
-  function applyFilterSet(item){q.value=item.q||'';setInputValues('quality[]',item.qualities||[]);setInputValues('status[]',item.statuses||[]);setInputValues('grade[]',item.grades||[]);setInputValues('parent_response[]',item.parentResponses||[]);submit();}
+  function applyFilterSet(item){q.value=item.q||'';if(campaignMonthHidden&&item.campaignMonth)campaignMonthHidden.value=item.campaignMonth;if(campaignHidden&&item.campaign)campaignHidden.value=item.campaign;if(visitView)visitView.value=item.visitView||'';setInputValues('quality[]',item.qualities||[]);setInputValues('status[]',item.statuses||[]);setInputValues('grade[]',item.grades||[]);setInputValues('parent_response[]',item.parentResponses||[]);submit();}
   let toastTimer=null;
   let dialogResolver=null;
   const toast=document.getElementById('crmToast');
@@ -926,6 +1252,9 @@ require __DIR__ . '/includes/layout_top.php';
   }
   function summary(item){
     const bits=[];
+    if(item.campaignMonth)bits.push('Month: '+item.campaignMonth);
+    if(item.campaign&&item.campaign!=='all')bits.push('Campaign: '+item.campaign.replace('_',' '));
+    if(item.visitView)bits.push('View: '+item.visitView.replaceAll('_',' '));
     if(item.q)bits.push('Search: '+item.q);
     if(item.qualities?.length)bits.push('Quality: '+item.qualities.length);
     if(item.statuses?.length)bits.push('Status: '+item.statuses.length);
@@ -940,44 +1269,19 @@ require __DIR__ . '/includes/layout_top.php';
     savedList.innerHTML=items.map(item=>'<article class="crm-saved-item '+(item.id===defaultId?'is-pinned':'')+'" data-id="'+esc(item.id)+'"><button type="button" class="crm-saved-apply"><strong>'+esc(item.name)+'</strong><small>'+esc(summary(item))+'</small></button><button type="button" class="crm-saved-pin" title="'+(item.id===defaultId?'Unpin default':'Pin as default')+'" aria-label="Pin saved filter"><svg viewBox="0 0 24 24"><path d="M8 3h8l1 6 3 3v2h-7v7l-1 1-1-1v-7H4v-2l3-3 1-6Z"/></svg></button><button type="button" class="crm-saved-delete" title="Delete saved filter" aria-label="Delete saved filter">×</button></article>').join('');
   }
 
-  presetTrigger?.addEventListener('click',e=>{e.stopPropagation();setPresetOpen(presetOptions.hidden);});
-  presetOptions?.addEventListener('click',e=>{
-    e.stopPropagation();
-    const btn=e.target.closest('[data-preset]');
-    if(!btn)return;
-    const value=btn.dataset.preset;
-    let start;
-    let end;
-    const today=new Date();
-    today.setHours(0,0,0,0);
-    if(value==='month'){
-      start=new Date(today.getFullYear(),today.getMonth(),1);
-      end=new Date(today.getFullYear(),today.getMonth()+1,0);
-    }else{
-      const days=Number(value);
-      end=new Date(today);
-      start=new Date(today);
-      start.setDate(start.getDate()-(days-1));
-    }
-    ts.value=fmt(start);
-    te.value=fmt(end);
-    hs.value=ts.value;
-    he.value=te.value;
-    markPreset(value);
-    setPresetOpen(false);
+  campaignMonthSelect?.addEventListener('change',()=>{
+    if(campaignMonthHidden)campaignMonthHidden.value=campaignMonthSelect.value;
+    if(campaignHidden)campaignHidden.value='all';
     submit();
   });
-  document.addEventListener('click',e=>{if(presetMenu&&!presetMenu.contains(e.target))setPresetOpen(false);});
-  document.addEventListener('keydown',e=>{if(e.key==='Escape')setPresetOpen(false);});
-
-  updatePeriodLabel('custom');
-
-  ts.addEventListener('change',()=>{hs.value=ts.value;if(te.value&&te.value<ts.value){te.value=ts.value;he.value=te.value;}markPreset('custom');submit()});
-  te.addEventListener('change',()=>{he.value=te.value;if(ts.value&&te.value<ts.value){ts.value=te.value;hs.value=ts.value;}markPreset('custom');submit()});
+  campaignSelect?.addEventListener('change',()=>{
+    if(campaignHidden)campaignHidden.value=campaignSelect.value;
+    submit();
+  });
   more.addEventListener('click',()=>setExpanded(!expanded.classList.contains('open')));
   if(clearSearch)clearSearch.addEventListener('click',()=>{q.value='';submit()});
   if(pp)pp.addEventListener('change',()=>{const u=new URL(location.href);u.searchParams.set('per_page',pp.value);u.searchParams.set('page','1');location.href=u});
-  activeFilters?.addEventListener('click',e=>{const chip=e.target.closest('.crm-active-tag');if(!chip)return;const name=chip.dataset.filterName;const value=chip.dataset.filterValue;if(name==='q'){q.value='';}else{const input=[...form.querySelectorAll('input[name="'+name+'"]')].find(x=>x.value===value);if(input)input.checked=false;}submit();});
+  activeFilters?.addEventListener('click',e=>{const chip=e.target.closest('.crm-active-tag');if(!chip)return;const name=chip.dataset.filterName;const value=chip.dataset.filterValue;if(name==='q'){q.value='';}else if(name==='visit_view'&&visitView){visitView.value='';}else{const input=[...form.querySelectorAll('input[name="'+name+'"]')].find(x=>x.value===value);if(input)input.checked=false;}submit();});
   saveButtons.forEach(b=>b.addEventListener('click',saveCurrent));
   savedList?.addEventListener('click',async e=>{const itemEl=e.target.closest('.crm-saved-item');if(!itemEl)return;const id=itemEl.dataset.id;const items=readSaved();const item=items.find(x=>x.id===id);if(!item)return;if(e.target.closest('.crm-saved-apply')){applyFilterSet(item);return;}if(e.target.closest('.crm-saved-pin')){const current=localStorage.getItem(DEFAULT_KEY)||'';if(current===id){localStorage.removeItem(DEFAULT_KEY);showToast('Default filter unpinned.','info');}else{localStorage.setItem(DEFAULT_KEY,id);showToast('Filter pinned as your default view.');}renderSaved();return;}if(e.target.closest('.crm-saved-delete')){const ok=await openDialog({title:'Delete saved filter?',message:'This saved filter set will be removed permanently.',confirmText:'Delete',showInput:false});if(ok===true){writeSaved(items.filter(x=>x.id!==id));if(localStorage.getItem(DEFAULT_KEY)===id)localStorage.removeItem(DEFAULT_KEY);showToast('Saved filter deleted.','info');}}});
 
@@ -1022,7 +1326,7 @@ require __DIR__ . '/includes/layout_top.php';
   }catch(_error){sessionStorage.removeItem(SEARCH_FOCUS_KEY);}
 
   const url=new URL(location.href);
-  const hasUserFilters=url.searchParams.has('q')||url.searchParams.has('status[]')||url.searchParams.has('grade[]')||url.searchParams.has('quality[]')||url.searchParams.has('parent_response[]');
+  const hasUserFilters=url.searchParams.has('campaign_month')||url.searchParams.has('campaign')||url.searchParams.has('visit_view')||url.searchParams.has('q')||url.searchParams.has('status[]')||url.searchParams.has('grade[]')||url.searchParams.has('quality[]')||url.searchParams.has('parent_response[]');
   const defaultId=localStorage.getItem(DEFAULT_KEY);
   if(!hasUserFilters&&defaultId&&!sessionStorage.getItem('lakelandDefaultApplied')){
     const item=readSaved().find(x=>x.id===defaultId);

@@ -55,20 +55,373 @@ if (!$leadCheck->fetchColumn()) {
 
 function lead_has_parent_response_column(PDO $db): bool
 {
-    static $hasColumn = null;
+    return lead_column_exists($db, 'parent_response');
+}
 
-    if ($hasColumn !== null) {
-        return $hasColumn;
+function lead_column_exists(PDO $db, string $column): bool
+{
+    static $cache = [];
+
+    if (array_key_exists($column, $cache)) {
+        return $cache[$column];
     }
 
     try {
-        $stmt = $db->query("SHOW COLUMNS FROM leads LIKE 'parent_response'");
-        $hasColumn = (bool)$stmt->fetchColumn();
+        $stmt = $db->prepare(
+            'SELECT COUNT(*)
+             FROM information_schema.columns
+             WHERE table_schema = DATABASE()
+               AND table_name = ?
+               AND column_name = ?'
+        );
+        $stmt->execute(['leads', $column]);
+
+        $cache[$column] = (bool)$stmt->fetchColumn();
     } catch (Throwable $error) {
-        $hasColumn = false;
+        $cache[$column] = false;
     }
 
-    return $hasColumn;
+    return $cache[$column];
+}
+
+function followup_column_exists(PDO $db, string $column): bool
+{
+    static $cache = [];
+
+    if (array_key_exists($column, $cache)) {
+        return $cache[$column];
+    }
+
+    try {
+        $stmt = $db->prepare(
+            'SELECT COUNT(*)
+             FROM information_schema.columns
+             WHERE table_schema = DATABASE()
+               AND table_name = ?
+               AND column_name = ?'
+        );
+        $stmt->execute(['follow_ups', $column]);
+
+        $cache[$column] = (bool)$stmt->fetchColumn();
+    } catch (Throwable $error) {
+        $cache[$column] = false;
+    }
+
+    return $cache[$column];
+}
+
+function followup_column_is_nullable(PDO $db, string $column): bool
+{
+    static $cache = [];
+
+    if (array_key_exists($column, $cache)) {
+        return $cache[$column];
+    }
+
+    try {
+        $stmt = $db->prepare(
+            'SELECT IS_NULLABLE
+             FROM information_schema.columns
+             WHERE table_schema = DATABASE()
+               AND table_name = ?
+               AND column_name = ?
+             LIMIT 1'
+        );
+        $stmt->execute(['follow_ups', $column]);
+
+        $cache[$column] = strtoupper((string)$stmt->fetchColumn()) !== 'NO';
+    } catch (Throwable $error) {
+        $cache[$column] = true;
+    }
+
+    return $cache[$column];
+}
+
+function followup_existing_columns(PDO $db, array $fields): array
+{
+    return array_values(
+        array_filter(
+            $fields,
+            static fn($field) => followup_column_exists($db, $field)
+        )
+    );
+}
+
+function table_column_enum_values(PDO $db, string $table, string $column): array
+{
+    static $cache = [];
+    $cacheKey = $table . '.' . $column;
+
+    if (array_key_exists($cacheKey, $cache)) {
+        return $cache[$cacheKey];
+    }
+
+    if (
+        !preg_match('/^[A-Za-z0-9_]+$/', $table)
+        || !preg_match('/^[A-Za-z0-9_]+$/', $column)
+    ) {
+        $cache[$cacheKey] = [];
+        return [];
+    }
+
+    try {
+        $stmt = $db->prepare("SHOW COLUMNS FROM `{$table}` LIKE ?");
+        $stmt->execute([$column]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $type = (string)($row['Type'] ?? '');
+
+        if (!preg_match('/^enum\((.*)\)$/i', $type, $matches)) {
+            $cache[$cacheKey] = [];
+            return [];
+        }
+
+        $values = array_map(
+            static fn($value) => (string)$value,
+            str_getcsv($matches[1], ',', "'", "\\")
+        );
+
+        $cache[$cacheKey] = $values;
+    } catch (Throwable $error) {
+        $cache[$cacheKey] = [];
+    }
+
+    return $cache[$cacheKey];
+}
+
+function first_supported_value(array $supported, array $candidates, string $fallback): string
+{
+    if (!$supported) {
+        return $fallback;
+    }
+
+    foreach ($candidates as $candidate) {
+        if (in_array($candidate, $supported, true)) {
+            return $candidate;
+        }
+    }
+
+    return $supported[0] ?? $fallback;
+}
+
+function compatible_workflow_value(
+    PDO $db,
+    string $table,
+    string $column,
+    string $status
+): string {
+    $status = normalize_workflow_status($status);
+    $supported = table_column_enum_values($db, $table, $column);
+
+    if (!$supported || in_array($status, $supported, true)) {
+        return $status;
+    }
+
+    $fallbacks = [
+        'new' => ['new'],
+        'contacted' => ['contacted', 'high_quality', 'new'],
+        'follow_up_required' => [
+            'follow_up_required',
+            'follow_up_needed',
+            'follow_up',
+            'contacted',
+            'high_quality',
+            'new',
+        ],
+        'visit_interested' => [
+            'visit_interested',
+            'visit_requested',
+            'follow_up_required',
+            'follow_up_needed',
+            'follow_up',
+            'contacted',
+            'high_quality',
+            'new',
+        ],
+        'visit_requested' => [
+            'visit_requested',
+            'visit_interested',
+            'follow_up_required',
+            'follow_up_needed',
+            'follow_up',
+            'contacted',
+            'high_quality',
+            'new',
+        ],
+        'visit_scheduled' => ['visit_scheduled', 'follow_up', 'contacted', 'new'],
+        'visited' => ['visited', 'visit_scheduled', 'follow_up', 'contacted', 'new'],
+        'placement_test_scheduled' => [
+            'placement_test_scheduled',
+            'visited',
+            'visit_scheduled',
+            'follow_up',
+            'contacted',
+            'new',
+        ],
+        'placement_test_completed' => [
+            'placement_test_completed',
+            'visited',
+            'visit_scheduled',
+            'converted',
+            'follow_up',
+            'new',
+        ],
+        'joined' => ['joined', 'converted', 'visited', 'visit_scheduled', 'new'],
+        'closed' => ['closed', 'not_interested', 'rejected', 'random_click', 'new'],
+    ];
+
+    return first_supported_value(
+        $supported,
+        $fallbacks[$status] ?? [$status, 'new'],
+        $status
+    );
+}
+
+function compatible_parent_response_value(
+    PDO $db,
+    string $table,
+    string $column,
+    string $response
+): string {
+    $response = normalize_parent_response($response);
+    $supported = table_column_enum_values($db, $table, $column);
+
+    if (!$supported || in_array($response, $supported, true)) {
+        return $response;
+    }
+
+    $fallbacks = [
+        'interested' => ['interested', 'positive', 'neutral', 'pending'],
+        'still_considering' => [
+            'still_considering',
+            'neutral',
+            'pending',
+            'positive',
+        ],
+        'call_back_later' => [
+            'call_back_later',
+            'will_call_back',
+            'still_considering',
+            'neutral',
+            'pending',
+        ],
+        'will_call_back' => [
+            'will_call_back',
+            'call_back_later',
+            'still_considering',
+            'neutral',
+            'pending',
+        ],
+        'pending' => ['pending', 'neutral', 'new'],
+        'no_response' => ['no_response', 'not_reached', 'neutral', 'pending'],
+        'not_reached' => ['not_reached', 'no_response', 'neutral', 'pending'],
+        'number_not_working' => [
+            'number_not_working',
+            'no_response',
+            'negative',
+            'neutral',
+            'pending',
+        ],
+        'not_interested' => ['not_interested', 'negative', 'rejected'],
+        'wrong_lead' => ['wrong_lead', 'random_click', 'negative'],
+        'accidental_lead' => ['accidental_lead', 'random_click', 'negative'],
+        'job_inquiry' => ['job_inquiry', 'random_click', 'negative'],
+        'rejected' => ['rejected', 'negative', 'not_interested'],
+    ];
+
+    return first_supported_value(
+        $supported,
+        $fallbacks[$response] ?? [$response, 'pending', 'neutral'],
+        $response
+    );
+}
+
+function followup_save_value(
+    PDO $db,
+    string $field,
+    array $data,
+    int $leadId,
+    int $number
+): mixed
+{
+    return match ($field) {
+        'lead_id' => $leadId,
+        'followup_number' => $number,
+        'followup_date' => $data['date'],
+        'followup_time' => $data['time']
+            ?: (
+                followup_column_is_nullable($db, 'followup_time')
+                    ? null
+                    : date('H:i:s')
+            ),
+        'followup_type' => $data['type'],
+        'outcome' => compatible_parent_response_value(
+            $db,
+            'follow_ups',
+            'outcome',
+            $data['outcome']
+        ),
+        'lead_status' => compatible_workflow_value(
+            $db,
+            'follow_ups',
+            'lead_status',
+            $data['lead_status']
+        ),
+        'notes' => $data['notes'],
+        'next_action_date' => $data['next_date'],
+        'next_action_time' => $data['next_time'],
+        default => null,
+    };
+}
+
+function update_lead_state_from_form(PDO $db, int $leadId, array $data): void
+{
+    $setParts = ['status = ?'];
+    $values = [
+        compatible_workflow_value(
+            $db,
+            'leads',
+            'status',
+            $data['lead_status']
+        ),
+    ];
+    $scheduleOptions = is_array($data['schedule_options'] ?? null)
+        ? $data['schedule_options']
+        : [];
+
+    if (lead_has_parent_response_column($db)) {
+        $setParts[] = 'parent_response = ?';
+        $values[] = compatible_parent_response_value(
+            $db,
+            'leads',
+            'parent_response',
+            $data['outcome']
+        );
+    }
+
+    if (
+        $data['lead_status'] === 'visit_scheduled'
+        && lead_column_exists($db, 'visit_date')
+        && !empty($scheduleOptions[0]['option_date'])
+    ) {
+        $setParts[] = 'visit_date = ?';
+        $values[] = $scheduleOptions[0]['option_date'];
+    }
+
+    if (
+        $data['lead_status'] === 'joined'
+        && lead_column_exists($db, 'converted_date')
+        && !empty($scheduleOptions[0]['option_date'])
+    ) {
+        $setParts[] = 'converted_date = ?';
+        $values[] = $scheduleOptions[0]['option_date'];
+    }
+
+    $values[] = $leadId;
+
+    $stmt = $db->prepare(
+        'UPDATE leads SET ' . implode(', ', $setParts) . ' WHERE id = ?'
+    );
+    $stmt->execute($values);
 }
 
 
@@ -77,6 +430,13 @@ function sync_lead_current_state_from_followups(
     PDO $db,
     int $leadId
 ): void {
+    if (
+        !followup_column_exists($db, 'lead_status')
+        || !followup_column_exists($db, 'outcome')
+    ) {
+        return;
+    }
+
     $followupStmt = $db->prepare(
         'SELECT id, followup_number, followup_date, followup_time,
                 lead_status, outcome
@@ -151,8 +511,18 @@ function sync_lead_current_state_from_followups(
         );
 
         $updateStmt->execute([
-            $mainWorkflowStatus,
-            $latestParentResponse,
+            compatible_workflow_value(
+                $db,
+                'leads',
+                'status',
+                $mainWorkflowStatus
+            ),
+            compatible_parent_response_value(
+                $db,
+                'leads',
+                'parent_response',
+                $latestParentResponse
+            ),
             $leadId,
         ]);
 
@@ -166,7 +536,12 @@ function sync_lead_current_state_from_followups(
     );
 
     $updateStmt->execute([
-        $mainWorkflowStatus,
+        compatible_workflow_value(
+            $db,
+            'leads',
+            'status',
+            $mainWorkflowStatus
+        ),
         $leadId,
     ]);
 }
@@ -329,13 +704,13 @@ function read_schedule_form(string $leadStatus): array
 
     /*
     |--------------------------------------------------------------------------
-    | Visit Interested / Visit Requested
+    | Visit Scheduled
     |--------------------------------------------------------------------------
     */
 
     if (in_array(
         $leadStatus,
-        ['visit_interested', 'visit_requested'],
+        ['visit_scheduled'],
         true
     )) {
         $dates = $_POST['visit_preference_date'] ?? [];
@@ -544,7 +919,9 @@ function replace_followup_schedule_options(
     int $followupId,
     array $scheduleOptions
 ): void {
-    require_schedule_table($db);
+    if (!schedule_table_exists($db)) {
+        return;
+    }
 
     $deleteStmt = $db->prepare(
         'DELETE FROM followup_schedule_options
@@ -674,6 +1051,32 @@ function reminder_column_exists(PDO $db, string $column): bool
     return $cache[$column];
 }
 
+function reminder_columns_exist(PDO $db, array $columns): bool
+{
+    foreach ($columns as $column) {
+        if (!reminder_column_exists($db, $column)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+function reminder_followup_sync_available(PDO $db): bool
+{
+    return reminder_table_exists($db)
+        && reminder_columns_exist($db, [
+            'lead_id',
+            'followup_id',
+            'reminder_type',
+            'title',
+            'reminder_date',
+            'reminder_time',
+            'status',
+            'notes',
+        ]);
+}
+
 function complete_reminder(
     PDO $db,
     int $reminderId,
@@ -681,18 +1084,22 @@ function complete_reminder(
 ): void {
     if (
         !reminder_table_exists($db)
+        || !reminder_columns_exist($db, ['id', 'lead_id', 'status'])
         || $reminderId <= 0
     ) {
         return;
     }
 
-    $setParts = [
-        'status = ?',
-        'completed_at = NOW()',
-        'dismissed_at = NULL',
-    ];
-
+    $setParts = ['status = ?'];
     $params = ['completed'];
+
+    if (reminder_column_exists($db, 'completed_at')) {
+        $setParts[] = 'completed_at = NOW()';
+    }
+
+    if (reminder_column_exists($db, 'dismissed_at')) {
+        $setParts[] = 'dismissed_at = NULL';
+    }
 
     if (reminder_column_exists($db, 'acknowledged_at')) {
         $setParts[] = 'acknowledged_at = NOW()';
@@ -718,7 +1125,17 @@ function complete_due_followup_reminder(
     int $leadId,
     ?int $excludeReminderId = null
 ): void {
-    if (!reminder_table_exists($db)) {
+    if (
+        !reminder_table_exists($db)
+        || !reminder_columns_exist($db, [
+            'id',
+            'lead_id',
+            'status',
+            'reminder_type',
+            'reminder_date',
+            'reminder_time',
+        ])
+    ) {
         return;
     }
 
@@ -781,6 +1198,10 @@ function insert_followup_reminder(
     ?string $notes = null,
     string $priority = 'normal'
 ): void {
+    if (!reminder_followup_sync_available($db)) {
+        return;
+    }
+
     $columns = [
         'lead_id',
         'followup_id',
@@ -835,7 +1256,7 @@ function sync_followup_reminder(
     int $followupId,
     array $data
 ): void {
-    if (!reminder_table_exists($db)) {
+    if (!reminder_followup_sync_available($db)) {
         return;
     }
 
@@ -1202,40 +1623,83 @@ if ($action === 'add') {
         $numStmt->execute([$lead_id]);
         $num = (int)$numStmt->fetchColumn();
 
-        $insertFollowup = $db->prepare(
-            'INSERT INTO follow_ups (
-                lead_id,
-                followup_number,
-                followup_date,
-                followup_time,
-                followup_type,
-                outcome,
-                lead_status,
-                notes,
-                next_action_date,
-                next_action_time
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        $saveFields = followup_existing_columns($db, [
+            'lead_id',
+            'followup_number',
+            'followup_date',
+            'followup_time',
+            'followup_type',
+            'outcome',
+            'lead_status',
+            'notes',
+            'next_action_date',
+            'next_action_time',
+        ]);
+
+        $requiredFields = [
+            'lead_id',
+            'followup_number',
+            'followup_date',
+        ];
+
+        if (array_diff($requiredFields, $saveFields)) {
+            throw new RuntimeException(
+                'The follow_ups table is missing required columns.'
+            );
+        }
+
+        $columnSql = implode(
+            ', ',
+            array_map(static fn($field) => "`{$field}`", $saveFields)
+        );
+        $placeholders = implode(', ', array_fill(0, count($saveFields), '?'));
+        $values = array_map(
+            static fn($field) => followup_save_value(
+                $db,
+                $field,
+                $data,
+                $lead_id,
+                $num
+            ),
+            $saveFields
         );
 
-        $insertFollowup->execute([
+        $insertFollowup = $db->prepare(
+            "INSERT INTO follow_ups ({$columnSql}) VALUES ({$placeholders})"
+        );
+
+        $insertFollowup->execute($values);
+
+        update_lead_state_from_form(
+            $db,
             $lead_id,
-            $num,
-            $data['date'],
-            $data['time'],
-            $data['type'],
-            $data['outcome'],
-            $data['lead_status'],
-            $data['notes'],
-            $data['next_date'],
-            $data['next_time'],
-        ]);
+            $data
+        );
 
         $followupId = (int)$db->lastInsertId();
 
         if ($followupId <= 0) {
-            throw new RuntimeException(
-                'The new follow-up ID could not be determined.'
+            $idLookup = $db->prepare(
+                'SELECT id
+                 FROM follow_ups
+                 WHERE lead_id = ?
+                   AND followup_number = ?
+                 ORDER BY id DESC
+                 LIMIT 1'
             );
+            $idLookup->execute([$lead_id, $num]);
+            $followupId = (int)$idLookup->fetchColumn();
+        }
+
+        if ($followupId <= 0) {
+            $db->commit();
+
+            flash_set(
+                "Follow-up #{$num} logged successfully."
+            );
+
+            header('Location: lead_view.php?id=' . $lead_id);
+            exit;
         }
 
         replace_followup_schedule_options(
@@ -1297,13 +1761,15 @@ if ($action === 'add') {
             . $lead_id
             . ': '
             . $error->getMessage()
+            . ' in '
+            . $error->getFile()
+            . ':'
+            . $error->getLine()
         );
 
         flash_set(
-            $error->getMessage() ===
-                'The follow-up scheduling table has not been created yet.'
-                ? $error->getMessage()
-                : 'The follow-up could not be saved. Please try again.',
+            'The follow-up could not be saved: '
+                . $error->getMessage(),
             'error'
         );
     }
@@ -1335,32 +1801,53 @@ if ($action === 'edit') {
 
         $db->beginTransaction();
 
+        $saveFields = followup_existing_columns($db, [
+            'followup_date',
+            'followup_time',
+            'followup_type',
+            'outcome',
+            'lead_status',
+            'notes',
+            'next_action_date',
+            'next_action_time',
+        ]);
+
+        if (!$saveFields) {
+            throw new RuntimeException(
+                'No compatible follow-up columns were found.'
+            );
+        }
+
+        $assignments = implode(
+            ', ',
+            array_map(static fn($field) => "`{$field}` = ?", $saveFields)
+        );
+        $values = array_map(
+            static fn($field) => followup_save_value(
+                $db,
+                $field,
+                $data,
+                $lead_id,
+                0
+            ),
+            $saveFields
+        );
+        $values[] = $followupId;
+        $values[] = $lead_id;
+
         $updateFollowup = $db->prepare(
-            'UPDATE follow_ups
-             SET
-                followup_date = ?,
-                followup_time = ?,
-                followup_type = ?,
-                outcome = ?,
-                lead_status = ?,
-                notes = ?,
-                next_action_date = ?,
-                next_action_time = ?
-             WHERE id = ? AND lead_id = ?'
+            "UPDATE follow_ups
+             SET {$assignments}
+             WHERE id = ? AND lead_id = ?"
         );
 
-        $updateFollowup->execute([
-            $data['date'],
-            $data['time'],
-            $data['type'],
-            $data['outcome'],
-            $data['lead_status'],
-            $data['notes'],
-            $data['next_date'],
-            $data['next_time'],
-            $followupId,
+        $updateFollowup->execute($values);
+
+        update_lead_state_from_form(
+            $db,
             $lead_id,
-        ]);
+            $data
+        );
 
         if ($updateFollowup->rowCount() === 0) {
             $existsStmt = $db->prepare(
@@ -1432,13 +1919,15 @@ if ($action === 'edit') {
             . $lead_id
             . ': '
             . $error->getMessage()
+            . ' in '
+            . $error->getFile()
+            . ':'
+            . $error->getLine()
         );
 
         flash_set(
-            $error->getMessage() ===
-                'The follow-up scheduling table has not been created yet.'
-                ? $error->getMessage()
-                : 'The follow-up could not be updated. Please try again.',
+            'The follow-up could not be updated: '
+                . $error->getMessage(),
             'error'
         );
     }
@@ -1517,7 +2006,10 @@ if ($action === 'delete') {
             $followupId
         );
 
-        if (reminder_table_exists($db)) {
+        if (
+            reminder_table_exists($db)
+            && reminder_columns_exist($db, ['followup_id', 'lead_id'])
+        ) {
             $db->prepare(
                 'DELETE FROM lead_reminders
                  WHERE followup_id = ?

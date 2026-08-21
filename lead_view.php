@@ -987,7 +987,6 @@ $workflowLabels = [
     'contacted' => 'Contacted',
     'follow_up_required' => 'Follow-up Required',
     'visit_interested' => 'Visit Interested',
-    'visit_requested' => 'Visit Requested',
        'visit_scheduled' => 'Visit Scheduled',
     'visited' => 'Visited',
     'placement_test_scheduled' => 'Placement Test Scheduled',
@@ -2607,14 +2606,13 @@ require __DIR__ . '/includes/layout_top.php';
                     </div>
 
                     <div class="field">
-                        <label for="notes">What happened / content sent</label>
+                        <label for="notes">What happened / content sent (optional)</label>
 
                         <textarea
                             id="notes"
                             name="notes"
                             rows="7"
                             placeholder="Example: Called the parent and explained admission fees, transport and school facilities."
-                            required
                         ></textarea>
                     </div>
 
@@ -3538,6 +3536,23 @@ require __DIR__ . '/includes/layout_top.php';
 
 <script>
 function localDateValue(date) {
+    try {
+        const parts = Object.fromEntries(
+            new Intl.DateTimeFormat('en-GB', {
+                timeZone: 'Asia/Colombo',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit'
+            }).formatToParts(date).map(part => [part.type, part.value])
+        );
+
+        return [parts.year, parts.month, parts.day].join('-');
+    } catch (_error) {
+        if (typeof COLOMBO_NOW !== 'undefined' && COLOMBO_NOW.date) {
+            return COLOMBO_NOW.date;
+        }
+    }
+
     return [
         date.getFullYear(),
         String(date.getMonth() + 1).padStart(2, '0'),
@@ -3546,12 +3561,37 @@ function localDateValue(date) {
 }
 
 function localTimeValue(date) {
+    try {
+        const parts = Object.fromEntries(
+            new Intl.DateTimeFormat('en-GB', {
+                timeZone: 'Asia/Colombo',
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false
+            }).formatToParts(date).map(part => [part.type, part.value])
+        );
+
+        return [
+            parts.hour === '24' ? '00' : parts.hour,
+            parts.minute
+        ].join(':');
+    } catch (_error) {
+        if (typeof COLOMBO_NOW !== 'undefined' && COLOMBO_NOW.time) {
+            return COLOMBO_NOW.time;
+        }
+    }
+
     return (
         String(date.getHours()).padStart(2, '0')
         + ':'
         + String(date.getMinutes()).padStart(2, '0')
     );
 }
+
+const COLOMBO_NOW = {
+    date: <?= json_encode((new DateTime('now', new DateTimeZone('Asia/Colombo')))->format('Y-m-d')) ?>,
+    time: <?= json_encode((new DateTime('now', new DateTimeZone('Asia/Colombo')))->format('H:i')) ?>
+};
 
 
 let visitPreferenceRowCount = 0;
@@ -3786,11 +3826,10 @@ function updateWorkflowScheduleVisibility() {
 
     const visibility = {
         visitPreferenceFields:
-            status === 'visit_interested'
-            || status === 'visit_requested',
+            status === 'visit_scheduled',
 
         confirmedVisitFields:
-            status === 'visit_scheduled',
+            false,
 
         placementTestFields:
             status === 'placement_test_scheduled',
@@ -3824,7 +3863,6 @@ function openFollowupModal(followup = null, sourceReminder = null) {
 
     form.reset();
 
-    const now = new Date();
     const isEditing = followup && followup.id;
 
     document.getElementById('followup_action').value =
@@ -3855,6 +3893,8 @@ function openFollowupModal(followup = null, sourceReminder = null) {
                     ? 'Save follow-up and acknowledge'
                     : 'Save follow-up'
             );
+
+    const now = new Date();
 
     document.getElementById('followup_date').value =
         isEditing && followup.date
@@ -4196,10 +4236,7 @@ document.getElementById('followupForm')?.addEventListener(
     function (event) {
         const status = document.getElementById('lead_status')?.value || '';
 
-        if (
-            status === 'visit_interested'
-            || status === 'visit_requested'
-        ) {
+        if (status === 'visit_scheduled') {
             const rows = Array.from(
                 document.querySelectorAll(
                     '#visitPreferenceRows .visit-preference-row'
@@ -4219,21 +4256,6 @@ document.getElementById('followupForm')?.addEventListener(
                     event.preventDefault();
                     return;
                 }
-            }
-        }
-
-        if (status === 'visit_scheduled') {
-            const start = document.getElementById(
-                'confirmed_visit_start_time'
-            )?.value || '';
-
-            const end = document.getElementById(
-                'confirmed_visit_end_time'
-            )?.value || '';
-
-            if (!validateTimeRange(start, end, 'the confirmed visit')) {
-                event.preventDefault();
-                return;
             }
         }
 

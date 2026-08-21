@@ -35,11 +35,13 @@ function lead_form_table_exists($db, $table)
 
 function lead_form_table_columns($db, $table)
 {
-    if (!lead_form_table_exists($db, $table)) {
-        return [];
-    }
-
     try {
+        $tableExistsStmt = $db->query("SHOW TABLES LIKE " . $db->quote($table));
+
+        if (!$tableExistsStmt->fetchColumn()) {
+            return [];
+        }
+
         $rows = $db->query("SHOW COLUMNS FROM `{$table}`")->fetchAll(PDO::FETCH_ASSOC);
         return array_column($rows, 'Field');
     } catch (Throwable $error) {
@@ -95,6 +97,14 @@ $parentResponseLabels = defined('PARENT_RESPONSE_LABELS')
         'job_inquiry' => 'Job Inquiry',
         'rejected' => 'Rejected',
     ];
+$parentResponseOptions = array_diff_key(
+    $parentResponseLabels,
+    array_flip(['positive', 'neutral', 'negative', 'random_click'])
+);
+$workflowStatusOptions = array_diff_key(
+    STATUS_LABELS,
+    array_flip(['follow_up_needed', 'follow_up', 'converted', 'high_quality'])
+);
 
 $lead = [
     'received_date' => date('Y-m-d'),
@@ -590,13 +600,26 @@ require __DIR__ . '/includes/layout_top.php';
 
         <div class="field">
             <label for="grade">Grade applying for</label>
-            <input
-                type="text"
-                id="grade"
-                name="grade"
-                value="<?= e((string) $lead['grade']) ?>"
-                placeholder="e.g. Grade 8"
-            >
+            <select id="grade" name="grade">
+                <option value="">Select grade</option>
+                <?php for ($gradeNumber = 1; $gradeNumber <= 11; $gradeNumber++): ?>
+                    <?php $gradeLabel = 'Grade ' . $gradeNumber; ?>
+                    <option
+                        value="<?= e($gradeLabel) ?>"
+                        <?= (string) $lead['grade'] === $gradeLabel ? 'selected' : '' ?>
+                    >
+                        <?= e($gradeLabel) ?>
+                    </option>
+                <?php endfor; ?>
+                <?php if (
+                    trim((string) $lead['grade']) !== ''
+                    && !preg_match('/^Grade (?:[1-9]|1[01])$/', (string) $lead['grade'])
+                ): ?>
+                    <option value="<?= e((string) $lead['grade']) ?>" selected>
+                        <?= e((string) $lead['grade']) ?>
+                    </option>
+                <?php endif; ?>
+            </select>
         </div>
     </div>
 
@@ -784,7 +807,7 @@ require __DIR__ . '/includes/layout_top.php';
                     name="parent_response"
                     onchange="updateStatusFields()"
                 >
-                    <?php foreach ($parentResponseLabels as $key => $label): ?>
+                    <?php foreach ($parentResponseOptions as $key => $label): ?>
                         <option
                             value="<?= e($key) ?>"
                             <?= ($lead['parent_response'] ?? 'pending') === $key
@@ -801,7 +824,7 @@ require __DIR__ . '/includes/layout_top.php';
         <div class="field">
             <label for="status">Workflow status</label>
             <select id="status" name="status" required onchange="updateStatusFields()">
-                <?php foreach (STATUS_LABELS as $key => $label): ?>
+                <?php foreach ($workflowStatusOptions as $key => $label): ?>
                     <option
                         value="<?= e($key) ?>"
                         <?= $lead['status'] === $key ? 'selected' : '' ?>

@@ -26,6 +26,30 @@ $active = $active ?? '';
     <nav>
       <a href="<?= BASE_PATH ?>/index.php" class="<?= $active==='dashboard'?'active':'' ?>">Dashboard</a>
       <a href="<?= BASE_PATH ?>/leads.php" class="<?= $active==='leads'?'active':'' ?>">Leads</a>
+      <div class="sidebar-tabs sidebar-subtabs" aria-label="Lead visit pipeline">
+        <?php
+          $visitView = $_GET['visit_view'] ?? '';
+          $visitTabs = [
+              'pending_visits' => ['Pending Visits', 'Need a date'],
+              'planned_visits' => ['Planned Visits', 'Booked'],
+              'visited' => ['Visited', 'Completed'],
+              'missed_appointments' => ['Missed Appointments', 'No-show'],
+          ];
+        ?>
+        <?php foreach ($visitTabs as $key => [$label, $hint]): ?>
+          <?php
+            $visitQuery = $_GET;
+            $visitQuery['visit_view'] = $key;
+            $visitQuery['page'] = 1;
+            unset($visitQuery['status']);
+          ?>
+          <a href="<?= BASE_PATH ?>/leads.php?<?= e(http_build_query($visitQuery)) ?>" class="<?= $active === 'leads' && $visitView === $key ? 'active' : '' ?>">
+            <span aria-hidden="true"></span>
+            <strong><?= e($label) ?></strong>
+            <small><?= e($hint) ?></small>
+          </a>
+        <?php endforeach; ?>
+      </div>
       <?php if (is_admin()): ?>
       <a href="<?= BASE_PATH ?>/lead_form.php" class="<?= $active==='add'?'active':'' ?>">Add Lead</a>
       <a href="<?= BASE_PATH ?>/import_csv.php" class="<?= $active==='import'?'active':'' ?>">Import CSV</a>
@@ -50,5 +74,12 @@ $active = $active ?? '';
   </aside>
   <main class="main">
     <?php $f = flash_get(); if ($f): ?>
-      <div class="flash <?= e($f['type']) ?>"><?= e($f['message']) ?></div>
+      <div class="toast-stack" aria-live="polite" aria-atomic="true">
+        <div class="app-toast <?= e($f['type']) ?>" role="status" data-toast>
+          <span class="app-toast-icon" aria-hidden="true"></span>
+          <span class="app-toast-message"><?= e($f['message']) ?></span>
+          <button type="button" class="app-toast-close" aria-label="Dismiss notification" data-toast-close>×</button>
+          <span class="app-toast-progress" aria-hidden="true"></span>
+        </div>
+      </div>
     <?php endif; ?>

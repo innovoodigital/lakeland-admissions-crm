@@ -31,6 +31,44 @@ $lead = [
 ];
 
 $errors = [];
+$action = trim((string)($_POST['action'] ?? ''));
+
+function lead_action_table_exists(PDO $db, string $table): bool
+{
+    try {
+        $stmt = $db->prepare(
+            'SELECT COUNT(*)
+             FROM information_schema.tables
+             WHERE table_schema = DATABASE()
+               AND table_name = ?'
+        );
+
+        $stmt->execute([$table]);
+
+        return (bool)$stmt->fetchColumn();
+    } catch (Throwable $error) {
+        return false;
+    }
+}
+
+function lead_action_column_exists(PDO $db, string $table, string $column): bool
+{
+    try {
+        $stmt = $db->prepare(
+            'SELECT COUNT(*)
+             FROM information_schema.columns
+             WHERE table_schema = DATABASE()
+               AND table_name = ?
+               AND column_name = ?'
+        );
+
+        $stmt->execute([$table, $column]);
+
+        return (bool)$stmt->fetchColumn();
+    } catch (Throwable $error) {
+        return false;
+    }
+}
 
 /*
 |--------------------------------------------------------------------------
@@ -55,6 +93,81 @@ if ($id > 0) {
     }
 
     $lead = array_merge($lead, $existing);
+}
+
+/*
+|--------------------------------------------------------------------------
+| Delete lead
+|--------------------------------------------------------------------------
+| The lead view posts only id/action/csrf for delete. Handle that action
+| before the normal save validation so missing form fields do not block it.
+*/
+
+if (
+    $_SERVER['REQUEST_METHOD'] === 'POST'
+    && $action === 'delete'
+) {
+    csrf_check();
+
+    if ($id <= 0) {
+        flash_set('Invalid lead.', 'error');
+        header('Location: leads.php');
+        exit;
+    }
+
+    try {
+        $db->beginTransaction();
+
+        if (lead_action_table_exists($db, 'followup_schedule_options')) {
+            if (lead_action_column_exists($db, 'followup_schedule_options', 'lead_id')) {
+                $stmt = $db->prepare(
+                    'DELETE FROM followup_schedule_options WHERE lead_id = ?'
+                );
+                $stmt->execute([$id]);
+            } elseif (lead_action_column_exists($db, 'followup_schedule_options', 'followup_id')) {
+                $stmt = $db->prepare(
+                    'DELETE FROM followup_schedule_options
+                     WHERE followup_id IN (
+                        SELECT id FROM follow_ups WHERE lead_id = ?
+                     )'
+                );
+                $stmt->execute([$id]);
+            }
+        }
+
+        foreach (['lead_reminders', 'lead_inquiries', 'follow_ups'] as $table) {
+            if (
+                lead_action_table_exists($db, $table)
+                && lead_action_column_exists($db, $table, 'lead_id')
+            ) {
+                $stmt = $db->prepare("DELETE FROM `{$table}` WHERE lead_id = ?");
+                $stmt->execute([$id]);
+            }
+        }
+
+        $stmt = $db->prepare('DELETE FROM leads WHERE id = ?');
+        $stmt->execute([$id]);
+
+        $db->commit();
+
+        flash_set('Lead deleted successfully.');
+        header('Location: leads.php');
+        exit;
+    } catch (Throwable $error) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+
+        error_log('Lead delete failed: ' . $error->getMessage());
+
+        flash_set(
+            'The lead could not be deleted. Please try again.',
+            'error'
+        );
+
+        header('Location: lead_view.php?id=' . $id);
+        exit;
+    }
 }
 
 /*

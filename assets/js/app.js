@@ -33,8 +33,30 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   });
 
-  var flash = document.querySelector('.flash');
-  if (flash) {
-    setTimeout(function () { flash.style.transition = 'opacity .5s'; flash.style.opacity = '0'; }, 4000);
-  }
+  document.querySelectorAll('[data-toast]').forEach(function (toast) {
+    var close = toast.querySelector('[data-toast-close]');
+    var timer = null;
+
+    function dismiss() {
+      toast.classList.add('hide');
+      setTimeout(function () {
+        var stack = toast.closest('.toast-stack');
+        toast.remove();
+        if (stack && !stack.querySelector('[data-toast]')) stack.remove();
+      }, 260);
+    }
+
+    function startTimer() {
+      timer = setTimeout(dismiss, 5000);
+    }
+
+    function stopTimer() {
+      clearTimeout(timer);
+    }
+
+    if (close) close.addEventListener('click', dismiss);
+    toast.addEventListener('mouseenter', stopTimer);
+    toast.addEventListener('mouseleave', startTimer);
+    startTimer();
+  });
 });
