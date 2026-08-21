@@ -44,6 +44,59 @@ function dashboard_column_exists(PDO $db, string $table, string $column): bool
     }
 }
 
+function dashboard_has_latest_followup_status(PDO $db): bool
+{
+    return dashboard_table_exists($db, 'follow_ups')
+        && dashboard_column_exists($db, 'follow_ups', 'id')
+        && dashboard_column_exists($db, 'follow_ups', 'lead_id')
+        && dashboard_column_exists($db, 'follow_ups', 'lead_status');
+}
+
+function dashboard_latest_followup_join(
+    PDO $db,
+    string $leadAlias = 'l',
+    string $latestAlias = 'lf'
+): string {
+    if (!dashboard_has_latest_followup_status($db)) {
+        return '';
+    }
+
+    $orderParts = [];
+
+    if (dashboard_column_exists($db, 'follow_ups', 'followup_number')) {
+        $orderParts[] = 'f_latest.followup_number DESC';
+    }
+
+    if (dashboard_column_exists($db, 'follow_ups', 'followup_date')) {
+        $orderParts[] = 'f_latest.followup_date DESC';
+    }
+
+    if (dashboard_column_exists($db, 'follow_ups', 'followup_time')) {
+        $orderParts[] = 'f_latest.followup_time DESC';
+    }
+
+    $orderParts[] = 'f_latest.id DESC';
+
+    return "LEFT JOIN follow_ups {$latestAlias}
+            ON {$latestAlias}.id = (
+                SELECT f_latest.id
+                FROM follow_ups f_latest
+                WHERE f_latest.lead_id = {$leadAlias}.id
+                ORDER BY " . implode(', ', $orderParts) . '
+                LIMIT 1
+            )';
+}
+
+function dashboard_effective_status_sql(
+    PDO $db,
+    string $leadAlias = 'l',
+    string $latestAlias = 'lf'
+): string {
+    return dashboard_has_latest_followup_status($db)
+        ? "COALESCE({$latestAlias}.lead_status, {$leadAlias}.status)"
+        : "{$leadAlias}.status";
+}
+
 function dashboard_reminder_title(array $row): string
 {
     foreach (['reminder_title', 'title', 'reminder_type'] as $key) {
@@ -141,6 +194,9 @@ $stat_leads = $db->prepare("SELECT COUNT(*) FROM leads WHERE received_date BETWE
 $stat_leads->execute([$start, $end]);
 $total_leads = (int)$stat_leads->fetchColumn();
 
+$latestFollowupJoin = dashboard_latest_followup_join($db);
+$effectiveStatusSql = dashboard_effective_status_sql($db);
+
 $plannedVisitConditions = [
     'l.visit_date BETWEEN ? AND ?',
 ];
@@ -150,13 +206,7 @@ if (
     dashboard_column_exists($db, 'follow_ups', 'lead_status')
     && dashboard_column_exists($db, 'follow_ups', 'next_action_date')
 ) {
-    $plannedVisitConditions[] = "EXISTS (
-        SELECT 1
-        FROM follow_ups f
-        WHERE f.lead_id = l.id
-          AND f.lead_status = 'visit_scheduled'
-          AND f.next_action_date BETWEEN ? AND ?
-    )";
+    $plannedVisitConditions[] = 'lf.next_action_date BETWEEN ? AND ?';
     $plannedVisitParams[] = $start;
     $plannedVisitParams[] = $end;
 }
@@ -193,7 +243,9 @@ if (
 $stat_visits = $db->prepare(
     'SELECT COUNT(DISTINCT l.id)
      FROM leads l
-     WHERE ' . implode(' OR ', $plannedVisitConditions)
+     ' . $latestFollowupJoin . "
+     WHERE {$effectiveStatusSql} = 'visit_scheduled'
+       AND (" . implode(' OR ', $plannedVisitConditions) . ')'
 );
 $stat_visits->execute($plannedVisitParams);
 $total_visits = (int)$stat_visits->fetchColumn();
@@ -240,7 +292,9 @@ if (
 $stat_conv = $db->prepare(
     'SELECT COUNT(DISTINCT l.id)
      FROM leads l
-     WHERE ' . implode(' OR ', $enrolledConditions)
+     ' . $latestFollowupJoin . "
+     WHERE {$effectiveStatusSql} IN ('joined', 'converted')
+       AND (" . implode(' OR ', $enrolledConditions) . ')'
 );
 $stat_conv->execute($enrolledParams);
 $total_conv = (int)$stat_conv->fetchColumn();
