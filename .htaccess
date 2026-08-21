@@ -1,0 +1,10 @@
+# Block direct access to sensitive files
+<FilesMatch "^(config\.php|config\.php\.example)$">
+  Require all denied
+</FilesMatch>
+
+<IfModule mod_php.c>
+  php_flag display_errors off
+</IfModule>
+
+Options -Indexes

@@ -1,0 +1,5 @@
+config.local.php
+.env
+error_log
+.well-known/
+cgi-bin/
