@@ -5478,6 +5478,20 @@ body.modal-open {
     font-weight: 750;
 }
 
+.lead-campaign-range {
+    display: block;
+    min-height: 15px;
+    margin-top: 6px;
+    color: var(--slate);
+    font-size: .66rem;
+    font-weight: 750;
+    line-height: 1.25;
+}
+
+html[data-theme="dark"] .lead-campaign-range {
+    color: rgba(230, 236, 255, .68);
+}
+
 @media (max-width: 1180px) {
     .crm-lead-overview {
         grid-template-columns: repeat(2, minmax(0, 1fr));

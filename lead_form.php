@@ -54,9 +54,44 @@ function lead_form_has_column($columns, $column)
     return in_array($column, $columns, true);
 }
 
+function lead_form_campaign_windows(string $month): array
+{
+    if (!preg_match('/^\d{4}-\d{2}$/', $month)) {
+        $month = date('Y-m');
+    }
+
+    $firstDay = DateTime::createFromFormat('!Y-m-d', $month . '-01')
+        ?: new DateTime('first day of this month');
+    $firstFriday = clone $firstDay;
+
+    if ($firstFriday->format('N') !== '5') {
+        $firstFriday->modify('next friday');
+    }
+
+    $windows = [];
+
+    for ($i = 1; $i <= 4; $i++) {
+        $start = clone $firstFriday;
+        $start->modify('+' . (($i - 1) * 7) . ' days');
+        $end = clone $start;
+        $end->modify('+4 days');
+
+        $windows[] = [
+            'key' => 'campaign_' . $i,
+            'label' => 'Campaign ' . $i,
+            'start' => $start->format('Y-m-d'),
+            'end' => $end->format('Y-m-d'),
+            'display' => $start->format('j M') . ' - ' . $end->format('j M'),
+        ];
+    }
+
+    return $windows;
+}
+
 $leadColumns = lead_form_table_columns($db, 'leads');
 $inquiryColumns = lead_form_table_columns($db, 'lead_inquiries');
 $hasInquiryTable = !empty($inquiryColumns);
+$todayDate = date('Y-m-d');
 
 $contactStatusLabels = [
     'new' => 'New',
@@ -561,6 +596,14 @@ require __DIR__ . '/includes/layout_top.php';
         <?php endif; ?>
 
         <div class="field">
+            <label for="lead_campaign">Campaign</label>
+            <select id="lead_campaign" name="lead_campaign">
+                <option value="">Select campaign</option>
+            </select>
+            <small class="lead-campaign-range" id="lead_campaign_range"></small>
+        </div>
+
+        <div class="field">
             <label for="source">How it came in</label>
             <select id="source" name="source" required>
                 <?php foreach (SOURCE_LABELS as $key => $label): ?>
@@ -946,6 +989,8 @@ require __DIR__ . '/includes/layout_top.php';
 </template>
 
 <script>
+const CAMPAIGN_TODAY = <?= json_encode($todayDate) ?>;
+
 function getLocalDate() {
     const today = new Date();
 
@@ -954,6 +999,141 @@ function getLocalDate() {
         String(today.getMonth() + 1).padStart(2, '0'),
         String(today.getDate()).padStart(2, '0')
     ].join('-');
+}
+
+function formatCampaignDate(dateText) {
+    const parts = String(dateText || '').split('-');
+
+    if (parts.length !== 3) {
+        return dateText || '';
+    }
+
+    const date = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+
+    return date.toLocaleDateString('en-GB', {
+        day: 'numeric',
+        month: 'short'
+    });
+}
+
+function campaignWindowsForMonth(month) {
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+        month = CAMPAIGN_TODAY.slice(0, 7);
+    }
+
+    const firstDay = new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)) - 1, 1);
+    const firstFriday = new Date(firstDay);
+    const day = firstFriday.getDay();
+    const daysUntilFriday = (5 - day + 7) % 7;
+
+    firstFriday.setDate(firstFriday.getDate() + daysUntilFriday);
+
+    return Array.from({ length: 4 }, function (_, index) {
+        const start = new Date(firstFriday);
+        start.setDate(firstFriday.getDate() + (index * 7));
+
+        const end = new Date(start);
+        end.setDate(start.getDate() + 4);
+
+        const startText = [
+            start.getFullYear(),
+            String(start.getMonth() + 1).padStart(2, '0'),
+            String(start.getDate()).padStart(2, '0')
+        ].join('-');
+        const endText = [
+            end.getFullYear(),
+            String(end.getMonth() + 1).padStart(2, '0'),
+            String(end.getDate()).padStart(2, '0')
+        ].join('-');
+
+        return {
+            key: 'campaign_' + (index + 1),
+            label: 'Campaign ' + (index + 1),
+            start: startText,
+            end: endText,
+            display: formatCampaignDate(startText) + ' - ' + formatCampaignDate(endText)
+        };
+    });
+}
+
+function updateLeadCampaignOptions() {
+    const dateInput = document.getElementById('received_date');
+    const campaignSelect = document.getElementById('lead_campaign');
+    const campaignRange = document.getElementById('lead_campaign_range');
+
+    if (!dateInput || !campaignSelect) {
+        return;
+    }
+
+    const receivedDate = dateInput.value || CAMPAIGN_TODAY;
+    const month = receivedDate.slice(0, 7);
+    const windows = campaignWindowsForMonth(month);
+    const availableWindows = windows.filter(function (window) {
+        return window.start <= CAMPAIGN_TODAY;
+    });
+    const matchingWindow = availableWindows.find(function (window) {
+        return receivedDate >= window.start && receivedDate <= window.end;
+    });
+    const previousValue = campaignSelect.value;
+
+    campaignSelect.innerHTML = '';
+
+    const emptyOption = document.createElement('option');
+    emptyOption.value = '';
+    emptyOption.textContent = availableWindows.length
+        ? 'Select campaign'
+        : 'No campaign available yet';
+    campaignSelect.appendChild(emptyOption);
+
+    availableWindows.forEach(function (window) {
+        const option = document.createElement('option');
+        option.value = window.key;
+        option.dataset.start = window.start;
+        option.dataset.end = window.end;
+        option.textContent = window.label + ' - ' + window.display;
+        campaignSelect.appendChild(option);
+    });
+
+    const stillAvailable = availableWindows.some(function (window) {
+        return window.key === previousValue;
+    });
+
+    campaignSelect.value = matchingWindow
+        ? matchingWindow.key
+        : (stillAvailable ? previousValue : '');
+
+    const selectedOption = campaignSelect.selectedOptions[0];
+    const selectedText = selectedOption && selectedOption.dataset.start
+        ? formatCampaignDate(selectedOption.dataset.start)
+            + ' to '
+            + formatCampaignDate(selectedOption.dataset.end)
+        : '';
+
+    if (campaignRange) {
+        campaignRange.textContent = selectedText;
+    }
+}
+
+function applySelectedLeadCampaign() {
+    const dateInput = document.getElementById('received_date');
+    const campaignSelect = document.getElementById('lead_campaign');
+    const selectedOption = campaignSelect?.selectedOptions[0];
+
+    if (!dateInput || !selectedOption || !selectedOption.dataset.start) {
+        updateLeadCampaignOptions();
+        return;
+    }
+
+    const start = selectedOption.dataset.start;
+    const end = selectedOption.dataset.end;
+
+    if (dateInput.value < start || dateInput.value > end) {
+        dateInput.value = CAMPAIGN_TODAY >= start && CAMPAIGN_TODAY <= end
+            ? CAMPAIGN_TODAY
+            : start;
+    }
+
+    updateLeadCampaignOptions();
 }
 
 function updateStatusFields() {
@@ -1070,6 +1250,15 @@ function updateInquiryNumbers() {
 document.addEventListener('DOMContentLoaded', function () {
     updateStatusFields();
     updateInquiryNumbers();
+    updateLeadCampaignOptions();
+
+    document
+        .getElementById('received_date')
+        ?.addEventListener('change', updateLeadCampaignOptions);
+
+    document
+        .getElementById('lead_campaign')
+        ?.addEventListener('change', applySelectedLeadCampaign);
 });
 </script>
 
